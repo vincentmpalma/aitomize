@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from openai import OpenAI
+from supabase import create_client
 import requests
 import os
 import base64
@@ -9,9 +10,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 class IngestRequest(BaseModel):
     repo_url: str
+
+class QueryRequest(BaseModel):
+    question: str
+    repo_url: str
+    history: list
 
 app = FastAPI()
 
@@ -20,7 +27,7 @@ app = FastAPI()
 def health():
     return {"status": "ok"}
 
-def chunk_file(path, content, chunk_size=50, overlap=10):
+def chunk_file(path, content, chunk_size=30, overlap=5):
     lines = content.split("\n")
     chunks = []
     i = 0
@@ -55,10 +62,13 @@ def ingest(body: IngestRequest):
     response = requests.get(tree_url, headers=headers)
     tree = response.json()
 
-    ALLOWED_EXTENSIONS = {".py", ".js", ".ts", ".jsx", ".tsx", ".md", ".json", ".html", ".css"}  
+    ALLOWED_EXTENSIONS = {".py", ".js", ".ts", ".jsx", ".tsx", ".md", ".json", ".html", ".css"}
+    EXCLUDED_FILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
     files = [
-      item["path"] for item in tree.get("tree", [])
-      if item["type"] == "blob" and os.path.splitext(item["path"])[1] in ALLOWED_EXTENSIONS
+        item["path"] for item in tree.get("tree", [])
+        if item["type"] == "blob"
+        and os.path.splitext(item["path"])[1] in ALLOWED_EXTENSIONS
+        and os.path.basename(item["path"]) not in EXCLUDED_FILES
     ]
 
     file_contents = [] 
@@ -75,4 +85,61 @@ def ingest(body: IngestRequest):
         all_chunks.extend(chunks)
 
     embedded_chunks = embed_chunks(all_chunks)
-    return {"chunks": embedded_chunks, "total": len(embedded_chunks)}
+
+    rows = [
+        {
+            "repo_url": body.repo_url,
+            "file_path": chunk["path"],
+            "content": chunk["content"],
+            "embedding": chunk["embedding"],
+        }
+        for chunk in embedded_chunks
+    ]
+    supabase.table("documents").insert(rows).execute()
+
+    return {"stored": len(rows)}
+
+
+@app.post("/query")
+def query(body: QueryRequest):
+
+    # call openai api to embed question into a vector
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=body.question
+    )
+    question_embedding = response.data[0].embedding
+
+    # calling match_documents function in supabase to find matching chunks
+    results = supabase.rpc("match_documents", {
+      "query_embedding": question_embedding,
+      "match_threshold": 0.1,
+      "match_count": 10,
+      "filter_repo_url": body.repo_url
+  }).execute()
+    
+    # build a string of all matching file paths and content from the matching documents
+    context = "\n\n".join([
+        f"File: {match['file_path']}\n{match['content']}"
+        for match in results.data
+    ])   
+
+    # message we give to openai endpoint
+    messages = [
+      {"role": "system", "content": f"""
+       You are a helpful assistant that answers questions about a codebase. 
+       Use the following code snippets as context to answer the user's question.
+       \n\n{context}"""},
+
+      *body.history,
+      {"role": "user", "content": body.question}
+  ]
+
+
+    chat_response = client.chat.completions.create(
+      model="gpt-4o-mini",
+      messages=messages
+    )
+
+    answer = chat_response.choices[0].message.content
+    return {"answer": answer}

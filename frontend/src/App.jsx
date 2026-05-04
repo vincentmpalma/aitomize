@@ -172,9 +172,10 @@ export default function App() {
         {messages.length === 0 && (
           <div className="empty-state">
             <p className="empty-hint">
-              {indexed
-                ? 'Ask anything about your codebase.'
-                : 'Index a repository to get started.'}
+              {indexed ? 'Ask anything about your codebase.' : 'Index a repository to get started.'}
+            </p>
+            <p className="empty-sub">
+              {indexed ? 'Powered by your indexed repo' : 'Paste a GitHub URL above and click Index'}
             </p>
           </div>
         )}
