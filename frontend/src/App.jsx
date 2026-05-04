@@ -54,6 +54,7 @@ export default function App() {
   const [indexedRepo, setIndexedRepo] = useState('')
   const [messages, setMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
+  const [isTyping, setIsTyping] = useState(false)
   const messagesEndRef = useRef(null)
 
   const indexed = indexState === 'success'
@@ -88,7 +89,9 @@ export default function App() {
     const userMsg = { role: 'user', text: chatInput.trim() }
     setMessages(prev => [...prev, userMsg])
     setChatInput('')
+    setIsTyping(true)
     setTimeout(() => {
+      setIsTyping(false)
       setMessages(prev => [
         ...prev,
         { role: 'assistant', text: `I've analyzed the indexed repository and I'm ready to help. You asked: "${userMsg.text}"` },
@@ -135,12 +138,8 @@ export default function App() {
         <nav className="navbar">
           <div className="navbar-side" />
           <div className="navbar-center">
-            {!indexed && indexState !== 'failed' && (
-              <span className="navbar-wordmark">Aitomize</span>
-            )}
             {indexed && (
               <div className="indexed-badge">
-                <span className="status-dot green" />
                 <span className="indexed-label">{repoShortName}</span>
               </div>
             )}
@@ -159,6 +158,15 @@ export default function App() {
         {!indexed ? (
           <div className="landing">
             <div className="landing-card">
+              <div className="landing-brand">
+                <img
+                  src={dark ? '/aitomize_logo_DARK.png' : '/aitomize_logo_LIGHT.png'}
+                  alt="Aitomize"
+                  className="landing-logo"
+                />
+                <h1 className="landing-title">Aitomize</h1>
+              </div>
+              <p className="landing-subtitle">Ask anything about any codebase.</p>
               <p className="landing-label">Enter a GitHub repository</p>
               <div className="landing-input-row">
                 <input
@@ -204,6 +212,15 @@ export default function App() {
                     <div className="ai-card">{msg.text}</div>
                   </div>
                 )
+              )}
+              {isTyping && (
+                <div className="message-row ai-row">
+                  <div className="typing-bubble">
+                    <span className="typing-dot" />
+                    <span className="typing-dot" />
+                    <span className="typing-dot" />
+                  </div>
+                </div>
               )}
               <div ref={messagesEndRef} />
             </div>
