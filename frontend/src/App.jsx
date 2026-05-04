@@ -31,9 +31,9 @@ function MoonIcon() {
 
 function SendIcon() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="22" y1="2" x2="11" y2="13" />
-      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" y1="20" x2="12" y2="4" />
+      <polyline points="5 11 12 4 19 11" />
     </svg>
   )
 }
@@ -57,7 +57,6 @@ export default function App() {
   const messagesEndRef = useRef(null)
 
   const indexed = indexState === 'success'
-  const chatEnabled = indexed
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
@@ -85,17 +84,14 @@ export default function App() {
   }
 
   function handleSend() {
-    if (!chatEnabled || !chatInput.trim()) return
+    if (!indexed || !chatInput.trim()) return
     const userMsg = { role: 'user', text: chatInput.trim() }
     setMessages(prev => [...prev, userMsg])
     setChatInput('')
     setTimeout(() => {
       setMessages(prev => [
         ...prev,
-        {
-          role: 'assistant',
-          text: `I've analyzed the indexed repository and I'm ready to help. You asked: "${userMsg.text}"`,
-        },
+        { role: 'assistant', text: `I've analyzed the indexed repository and I'm ready to help. You asked: "${userMsg.text}"` },
       ])
     }, 1200)
   }
@@ -113,7 +109,16 @@ export default function App() {
     <div className="app">
       <aside className={`sidebar${sidebarOpen ? '' : ' sidebar-collapsed'}`}>
         <div className="sidebar-header">
-          {sidebarOpen && <span className="wordmark sidebar-wordmark">Aitomize</span>}
+          {sidebarOpen && (
+            <div className="sidebar-brand">
+              <img
+                src={dark ? '/aitomize_logo_DARK.png' : '/aitomize_logo_LIGHT.png'}
+                alt="Aitomize logo"
+                className="sidebar-logo"
+              />
+              <span className="wordmark sidebar-wordmark">Aitomize</span>
+            </div>
+          )}
           <button className="sidebar-toggle" onClick={() => setSidebarOpen(o => !o)} aria-label="Toggle sidebar">
             <ChevronIcon collapsed={!sidebarOpen} />
           </button>
@@ -121,100 +126,108 @@ export default function App() {
         {sidebarOpen && (
           <>
             <span className="sidebar-title">History</span>
-            <span className="sidebar-coming-soon">Coming soon</span>
+            <span className="sidebar-coming-soon"><span className="coming-soon-tag">Coming soon</span></span>
           </>
         )}
       </aside>
 
       <div className="main-column">
-      <nav className="navbar">
-        <div className="navbar-side" />
-        <div className="navbar-center">
-          {indexState === 'success' ? (
-            <div className="indexed-badge">
-              <span className="status-dot green" />
-              <span className="indexed-label">{repoShortName} indexed</span>
-            </div>
-          ) : indexState === 'failed' ? (
-            <div className="indexed-badge">
-              <span className="status-dot red" />
-              <span className="indexed-label">Indexing failed</span>
-            </div>
-          ) : (
-            <div className="repo-input-group">
-              <input
-                className="repo-input"
-                type="text"
-                placeholder="github.com/owner/repo"
-                value={repoInput}
-                onChange={e => setRepoInput(e.target.value)}
-                onKeyDown={handleRepoKeyDown}
-                disabled={indexState === 'indexing'}
-                spellCheck={false}
-              />
+        <nav className="navbar">
+          <div className="navbar-side" />
+          <div className="navbar-center">
+            {!indexed && indexState !== 'failed' && (
+              <span className="navbar-wordmark">Aitomize</span>
+            )}
+            {indexed && (
+              <div className="indexed-badge">
+                <span className="status-dot green" />
+                <span className="indexed-label">{repoShortName}</span>
+              </div>
+            )}
+            {indexState === 'failed' && (
+              <div className="indexed-badge">
+                <span className="status-dot red" />
+                <span className="indexed-label">Indexing failed — try again</span>
+              </div>
+            )}
+          </div>
+          <button className="theme-toggle" onClick={() => setDark(d => !d)} aria-label="Toggle theme">
+            {dark ? <SunIcon /> : <MoonIcon />}
+          </button>
+        </nav>
+
+        {!indexed ? (
+          <div className="landing">
+            <div className="landing-card">
+              <p className="landing-label">Enter a GitHub repository</p>
+              <div className="landing-input-row">
+                <input
+                  className="landing-input"
+                  type="text"
+                  placeholder="github.com/owner/repo"
+                  value={repoInput}
+                  onChange={e => setRepoInput(e.target.value)}
+                  onKeyDown={handleRepoKeyDown}
+                  disabled={indexState === 'indexing'}
+                  spellCheck={false}
+                  autoFocus
+                />
+              </div>
               <button
-                className="index-btn"
+                className="landing-btn"
                 onClick={handleIndex}
                 disabled={!repoInput.trim() || indexState === 'indexing'}
               >
-                {indexState === 'indexing' ? <Spinner /> : 'Index'}
+                {indexState === 'indexing' ? <><Spinner /> Indexing…</> : 'Index Repository'}
+              </button>
+              {indexState === 'failed' && (
+                <p className="landing-error">Indexing failed. Please check the URL and try again.</p>
+              )}
+            </div>
+          </div>
+        ) : (
+          <main className="chat-area">
+            {messages.length === 0 && (
+              <div className="empty-state">
+                <p className="empty-hint">Ask anything about your codebase.</p>
+              </div>
+            )}
+
+            <div className="messages">
+              {messages.map((msg, i) =>
+                msg.role === 'user' ? (
+                  <div key={i} className="message-row user-row">
+                    <div className="bubble user-bubble">{msg.text}</div>
+                  </div>
+                ) : (
+                  <div key={i} className="message-row ai-row">
+                    <div className="ai-card">{msg.text}</div>
+                  </div>
+                )
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            <div className="chat-input-bar">
+              <textarea
+                className="chat-textarea"
+                placeholder="Ask about your codebase…"
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={handleChatKeyDown}
+                rows={1}
+              />
+              <button
+                className="send-btn"
+                onClick={handleSend}
+                disabled={!chatInput.trim()}
+                aria-label="Send"
+              >
+                <SendIcon />
               </button>
             </div>
-          )}
-        </div>
-
-        <button className="theme-toggle" onClick={() => setDark(d => !d)} aria-label="Toggle theme">
-          {dark ? <SunIcon /> : <MoonIcon />}
-        </button>
-      </nav>
-
-      <main className="chat-area">
-        {messages.length === 0 && (
-          <div className="empty-state">
-            <p className="empty-hint">
-              {indexed ? 'Ask anything about your codebase.' : 'Index a repository to get started.'}
-            </p>
-            <p className="empty-sub">
-              {indexed ? 'Powered by your indexed repo' : 'Paste a GitHub URL above and click Index'}
-            </p>
-          </div>
+          </main>
         )}
-
-        <div className="messages">
-          {messages.map((msg, i) =>
-            msg.role === 'user' ? (
-              <div key={i} className="message-row user-row">
-                <div className="bubble user-bubble">{msg.text}</div>
-              </div>
-            ) : (
-              <div key={i} className="message-row ai-row">
-                <div className="ai-card">{msg.text}</div>
-              </div>
-            )
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-
-        <div className={`chat-input-bar${chatEnabled ? '' : ' dimmed'}`}>
-          <textarea
-            className="chat-textarea"
-            placeholder="Ask about your codebase…"
-            value={chatInput}
-            onChange={e => setChatInput(e.target.value)}
-            onKeyDown={handleChatKeyDown}
-            disabled={!chatEnabled}
-            rows={1}
-          />
-          <button
-            className="send-btn"
-            onClick={handleSend}
-            disabled={!chatEnabled || !chatInput.trim()}
-            aria-label="Send"
-          >
-            <SendIcon />
-          </button>
-        </div>
-      </main>
       </div>
     </div>
   )
