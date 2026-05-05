@@ -55,6 +55,7 @@ export default function App() {
   const [messages, setMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [isTyping, setIsTyping] = useState(false)
+  const [history, setHistory] = useState([])
   const messagesEndRef = useRef(null)
 
   const indexed = indexState === 'success'
@@ -67,36 +68,66 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  function handleIndex() {
+  async function handleIndex(force = false) {
     if (!repoInput.trim() || indexState === 'indexing') return
     setIndexState('indexing')
-    setTimeout(() => {
-      if (repoInput.toLowerCase().includes('fail')) {
-        setIndexState('failed')
-      } else {
-        setIndexedRepo(repoInput.trim())
+    try {
+      const res = await fetch('http://localhost:8000/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo_url: force ? indexedRepo : repoInput.trim(), force })
+      })
+      const data = await res.json()
+      console.log("data.status from ingest is: " + data.status)
+      if (data.status === 'indexed' || data.status === 'already_indexed') {
+        setIndexedRepo(force ? indexedRepo : repoInput.trim())
         setIndexState('success')
+        if (force) {
+          setMessages([])
+          setHistory([])
+        }
+      } else {
+        setIndexState('failed')
       }
-    }, 2000)
+    } catch (err) {
+      console.error('Indexing error:', err)
+      setIndexState('failed')
+    }
   }
 
   function handleRepoKeyDown(e) {
     if (e.key === 'Enter') handleIndex()
   }
 
-  function handleSend() {
+  async function handleSend() {
     if (!indexed || !chatInput.trim()) return
     const userMsg = { role: 'user', text: chatInput.trim() }
     setMessages(prev => [...prev, userMsg])
     setChatInput('')
     setIsTyping(true)
-    setTimeout(() => {
+    try {
+      const res = await fetch('http://localhost:8000/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: userMsg.text,
+          repo_url: indexedRepo,
+          history: history
+        })
+      })
+      const data = await res.json()
+      const answer = data.answer
       setIsTyping(false)
-      setMessages(prev => [
+      setMessages(prev => [...prev, { role: 'assistant', text: answer }])
+      setHistory(prev => [
         ...prev,
-        { role: 'assistant', text: `I've analyzed the indexed repository and I'm ready to help. You asked: "${userMsg.text}"` },
+        { role: 'user', content: userMsg.text },
+        { role: 'assistant', content: answer }
       ])
-    }, 1200)
+    } catch {
+      setIsTyping(false)
+      setMessages(prev => [...prev, { role: 'assistant', text: 'Something went wrong. Please try again.' }])
+    }
   }
 
   function handleChatKeyDown(e) {
@@ -139,8 +170,13 @@ export default function App() {
           <div className="navbar-side" />
           <div className="navbar-center">
             {indexed && (
-              <div className="indexed-badge">
-                <span className="indexed-label">{repoShortName}</span>
+              <div className="navbar-indexed-row">
+                <div className="indexed-badge">
+                  <span className="indexed-label">{repoShortName}</span>
+                </div>
+                <button className="reindex-btn" onClick={() => handleIndex(true)} disabled={indexState === 'indexing'}>
+                  {indexState === 'indexing' ? <Spinner /> : <>Re-index <span className="reindex-chevron">›</span></>}
+                </button>
               </div>
             )}
             {indexState === 'failed' && (
@@ -183,7 +219,7 @@ export default function App() {
               </div>
               <button
                 className="landing-btn"
-                onClick={handleIndex}
+                onClick={() => handleIndex()}
                 disabled={!repoInput.trim() || indexState === 'indexing'}
               >
                 {indexState === 'indexing' ? <><Spinner /> Indexing…</> : 'Index Repository'}

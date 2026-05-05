@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
 from supabase import create_client
@@ -10,10 +11,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
 
 class IngestRequest(BaseModel):
     repo_url: str
+    force: bool = False
 
 class QueryRequest(BaseModel):
     question: str
@@ -21,6 +23,13 @@ class QueryRequest(BaseModel):
     history: list
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -51,6 +60,16 @@ def embed_chunks(chunks):
 
 @app.post("/ingest")
 def ingest(body: IngestRequest):
+    print('in /ingest')
+    existing = supabase.table("documents").select("id").eq("repo_url", body.repo_url).limit(1).execute()
+    if existing.data and not body.force:
+        print('returning already_indexed')
+        return {"status": "already_indexed"}
+
+    if body.force:
+        print('body.force is true')
+        supabase.table("documents").delete().eq("repo_url", body.repo_url).execute()
+
     parts = body.repo_url.rstrip("/").split("/")
     owner = parts[-2]
     repo = parts[-1]
@@ -97,7 +116,7 @@ def ingest(body: IngestRequest):
     ]
     supabase.table("documents").insert(rows).execute()
 
-    return {"stored": len(rows)}
+    return {"status": "indexed", "stored": len(rows)}
 
 
 @app.post("/query")
