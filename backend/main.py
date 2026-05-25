@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
@@ -30,6 +30,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+async def get_current_user(authorization: str = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.split(" ")[1]
+    try:
+        user = supabase.auth.get_user(token)
+        return user.user
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
 
 
 @app.get("/health")
@@ -162,3 +173,13 @@ def query(body: QueryRequest):
 
     answer = chat_response.choices[0].message.content
     return {"answer": answer}
+
+@app.get("/repos")
+async def get_repos(user=Depends(get_current_user)):
+    username = user.user_metadata["user_name"]
+    headers = {"Authorization": f"token {os.getenv('GITHUB_TOKEN')}"}
+    response = requests.get(
+        f"https://api.github.com/users/{username}/repos?sort=updated&per_page=50",
+        headers=headers
+    )
+    return {"repos": response.json()}

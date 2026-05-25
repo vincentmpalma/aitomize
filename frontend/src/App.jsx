@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { supabase } from './supabaseClient'
+import { Toaster, toast } from 'sonner'
 import './App.css'
 
 function Spinner() {
@@ -68,6 +69,9 @@ export default function App() {
   const [history, setHistory] = useState([])
   const messagesEndRef = useRef(null)
   const [session, setSession] = useState(null)
+  const [isReposModal, setIsReposModal] = useState(false)
+  const [repos, setRepos] = useState([])
+  const [reposLoading, setReposLoading] = useState(false)
 
   const indexed = indexState === 'success'
 
@@ -94,6 +98,32 @@ export default function App() {
 
   async function handleLogout() {
     await supabase.auth.signOut()
+  }
+
+  async function openRepos(){
+    if (!session){
+      console.log("false")
+      toast('Sign in to view your repos')
+    } else{
+      setIsReposModal(true)
+      setReposLoading(true)
+       try {
+      const res = await fetch('http://localhost:8000/repos', {
+        headers: { 'Authorization': `Bearer ${session.access_token}` }
+      })
+      const data = await res.json()
+      setRepos(data.repos)
+    } catch {
+      toast.error('Failed to load repos')
+    } finally {
+      setReposLoading(false)
+    }
+    }
+  }
+
+  function closeRepos() {
+    setIsReposModal(false)
+    setRepos([])
   }
 
   async function handleIndex(force = false) {
@@ -192,9 +222,21 @@ export default function App() {
           </>
         )}
       </aside>
-
+        <Toaster 
+        position="top-center" 
+        theme={dark ? 'dark' : 'light'}
+            toastOptions={{
+      style: {
+        textAlign: 'center',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }
+    }}
+        
+        />
       <div className="main-column">
         <nav className="navbar">
+  
           <div className="navbar-side" />
           <div className="navbar-center">
             {indexed && (
@@ -217,6 +259,7 @@ export default function App() {
           <div className="navbar-right">
             {session ? (
               <>
+                <button className="my-repos-btn" onClick={openRepos}>My Repos</button>
                 <img src={session.user.user_metadata.avatar_url} className="user-avatar" alt="avatar" />
                 <button className="logout-btn" onClick={handleLogout}>Sign out</button>
               </>
@@ -322,6 +365,39 @@ export default function App() {
           </main>
         )}
       </div>
+
+        {
+          isReposModal && (
+            <div className="modal-backdrop" onClick={closeRepos}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">Your Repositories</span>
+          <button className="modal-close" onClick={closeRepos}>✕</button>
+        </div>
+        <div className="modal-body">
+          {reposLoading ? (
+            <div className="modal-loading"><Spinner /></div>
+          ) : (
+            repos.map(repo => (
+              <button
+                key={repo.id}
+                className="repo-row"
+                onClick={() => {
+                  setRepoInput(repo.html_url)
+                  closeRepos()
+                }}
+              >
+                <span className="repo-name">{repo.full_name}</span>
+                {repo.description && <span className="repo-desc">{repo.description}</span>}
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+          )
+        }
+
     </div>
   )
 }

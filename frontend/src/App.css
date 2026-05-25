@@ -332,6 +332,26 @@
   }
 }
 
+.my-repos-btn {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 100px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text-h);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+
+  &:hover {
+    opacity: 0.75;
+  }
+}
+
 .signin-btn {
   display: flex;
   align-items: center;
@@ -732,3 +752,96 @@
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .modal {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    width: 480px;
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    animation: fadeIn 0.15s ease;
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .modal-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-h);
+  }
+
+  .modal-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+
+    &:hover {
+      color: var(--text-h);
+    }
+  }
+
+  .modal-body {
+    overflow-y: auto;
+    padding: 8px;
+  }
+
+  .modal-loading {
+    display: flex;
+    justify-content: center;
+    padding: 32px;
+  }
+
+  .repo-row {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: none;
+    background: none;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s;
+
+    &:hover {
+      background: var(--input-bg);
+    }
+  }
+
+  .repo-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-h);
+  }
+
+  .repo-desc {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
