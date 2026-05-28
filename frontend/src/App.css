@@ -616,6 +616,16 @@
   animation: slideUp 0.2s ease;
 }
 
+.ai-card p { margin: 0 0 10px; }
+.ai-card p:last-child { margin-bottom: 0; }
+.ai-card ol, .ai-card ul { margin: 0 0 10px; padding-left: 20px; }
+.ai-card li { margin-bottom: 4px; }
+.ai-card strong { font-weight: 600; }
+.ai-card h1, .ai-card h2, .ai-card h3 { margin: 0 0 8px; font-weight: 600; }
+.ai-card code { background: var(--input-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 13px; }
+.ai-card pre { background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 0 0 10px; }
+.ai-card pre code { background: none; border: none; padding: 0; font-size: 13px; }
+
 /* Typing indicator */
 .typing-bubble {
   display: flex;
@@ -813,6 +823,11 @@
     justify-content: center;
     padding: 32px;
   }
+
+.modal-loading .spinner {
+  border-color: var(--border);
+  border-top-color: var(--text-muted);
+}
 
   .repo-row {
     display: flex;

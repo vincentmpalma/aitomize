@@ -17,6 +17,11 @@ class IngestRequest(BaseModel):
     repo_url: str
     force: bool = False
 
+class IngestPersonalRequest(BaseModel):
+    repo_url: str
+    force: bool = False
+    provider_token: str
+
 class QueryRequest(BaseModel):
     question: str
     repo_url: str
@@ -38,10 +43,8 @@ async def get_current_user(authorization: str = Header(None)):
     try:
         user = supabase.auth.get_user(token)
         return user.user
-    except:
+    except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
-
-
 
 @app.get("/health")
 def health():
@@ -58,7 +61,6 @@ def chunk_file(path, content, chunk_size=30, overlap=5):
         i += chunk_size - overlap
     return chunks
 
-
 def embed_chunks(chunks):
     for chunk in chunks:
         response = client.embeddings.create(
@@ -68,25 +70,11 @@ def embed_chunks(chunks):
         chunk["embedding"] = response.data[0].embedding
     return chunks
 
-
-@app.post("/ingest")
-def ingest(body: IngestRequest):
-    print('in /ingest')
-    existing = supabase.table("documents").select("id").eq("repo_url", body.repo_url).limit(1).execute()
-    if existing.data and not body.force:
-        print('returning already_indexed')
-        return {"status": "already_indexed"}
-
-    if body.force:
-        print('body.force is true')
-        supabase.table("documents").delete().eq("repo_url", body.repo_url).execute()
-
-    parts = body.repo_url.rstrip("/").split("/")
+def fetch_and_embed(repo_url, github_token):
+    parts = repo_url.rstrip("/").split("/")
     owner = parts[-2]
     repo = parts[-1]
-
-    token = os.getenv("GITHUB_TOKEN")
-    headers = {"Authorization": f"token {token}"}
+    headers = {"Authorization": f"token {github_token}"}
 
     tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1"
     response = requests.get(tree_url, headers=headers)
@@ -101,7 +89,7 @@ def ingest(body: IngestRequest):
         and os.path.basename(item["path"]) not in EXCLUDED_FILES
     ]
 
-    file_contents = [] 
+    file_contents = []
     for file_path in files:
         file_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}"
         file_response = requests.get(file_url, headers=headers)
@@ -111,68 +99,83 @@ def ingest(body: IngestRequest):
 
     all_chunks = []
     for file in file_contents:
-        chunks = chunk_file(file["path"], file["content"])
-        all_chunks.extend(chunks)
+        all_chunks.extend(chunk_file(file["path"], file["content"]))
 
-    embedded_chunks = embed_chunks(all_chunks)
+    return embed_chunks(all_chunks)
 
-    rows = [
-        {
-            "repo_url": body.repo_url,
-            "file_path": chunk["path"],
-            "content": chunk["content"],
-            "embedding": chunk["embedding"],
-        }
-        for chunk in embedded_chunks
-    ]
-    supabase.table("documents").insert(rows).execute()
-
-    return {"status": "indexed", "stored": len(rows)}
-
-
-@app.post("/query")
-def query(body: QueryRequest):
-
-    # call openai api to embed question into a vector
+def run_query(question, repo_url, history, user_id=None):
     response = client.embeddings.create(
         model="text-embedding-3-small",
-        input=body.question
+        input=question
     )
     question_embedding = response.data[0].embedding
 
-    # calling match_documents function in supabase to find matching chunks
     results = supabase.rpc("match_documents", {
-      "query_embedding": question_embedding,
-      "match_threshold": 0.1,
-      "match_count": 10,
-      "filter_repo_url": body.repo_url
-  }).execute()
-    
-    # build a string of all matching file paths and content from the matching documents
+        "query_embedding": question_embedding,
+        "match_threshold": 0.1,
+        "match_count": 10,
+        "filter_repo_url": repo_url,
+        "filter_user_id": user_id
+    }).execute()
+
     context = "\n\n".join([
         f"File: {match['file_path']}\n{match['content']}"
         for match in results.data
-    ])   
+    ])
 
-    # message we give to openai endpoint
     messages = [
-      {"role": "system", "content": f"""
-       You are a helpful assistant that answers questions about a codebase. 
-       Use the following code snippets as context to answer the user's question.
-       \n\n{context}"""},
-
-      *body.history,
-      {"role": "user", "content": body.question}
-  ]
-
+        {"role": "system", "content": f"You are a helpful assistant that answers questions about a codebase. Use the following code snippets as context to answer the user's question.\n\n{context}"},
+        *history,
+        {"role": "user", "content": question}
+    ]
 
     chat_response = client.chat.completions.create(
-      model="gpt-4o-mini",
-      messages=messages
+        model="gpt-4o-mini",
+        messages=messages
     )
 
-    answer = chat_response.choices[0].message.content
-    return {"answer": answer}
+    return chat_response.choices[0].message.content
+
+@app.post("/ingest")
+def ingest(body: IngestRequest):
+    existing = supabase.table("documents").select("id").eq("repo_url", body.repo_url).is_("user_id", "null").limit(1).execute()
+    if existing.data and not body.force:
+        return {"status": "already_indexed"}
+    if body.force:
+        supabase.table("documents").delete().eq("repo_url", body.repo_url).is_("user_id", "null").execute()
+
+    embedded_chunks = fetch_and_embed(body.repo_url, os.getenv("GITHUB_TOKEN"))
+    rows = [
+        {"repo_url": body.repo_url, "file_path": c["path"], "content": c["content"], "embedding": c["embedding"], "user_id": None}
+        for c in embedded_chunks
+    ]
+    supabase.table("documents").insert(rows).execute()
+    return {"status": "indexed", "stored": len(rows)}
+
+@app.post("/ingest-personal")
+def ingest_personal(body: IngestPersonalRequest, user=Depends(get_current_user)):
+    user_id = user.id
+    existing = supabase.table("documents").select("id").eq("repo_url", body.repo_url).eq("user_id", user_id).limit(1).execute()
+    if existing.data and not body.force:
+        return {"status": "already_indexed"}
+    if body.force:
+        supabase.table("documents").delete().eq("repo_url", body.repo_url).eq("user_id", user_id).execute()
+
+    embedded_chunks = fetch_and_embed(body.repo_url, body.provider_token)
+    rows = [
+        {"repo_url": body.repo_url, "file_path": c["path"], "content": c["content"], "embedding": c["embedding"], "user_id": user_id}
+        for c in embedded_chunks
+    ]
+    supabase.table("documents").insert(rows).execute()
+    return {"status": "indexed", "stored": len(rows)}
+
+@app.post("/query")
+def query(body: QueryRequest):
+    return {"answer": run_query(body.question, body.repo_url, body.history, user_id=None)}
+
+@app.post("/query-personal")
+def query_personal(body: QueryRequest, user=Depends(get_current_user)):
+    return {"answer": run_query(body.question, body.repo_url, body.history, user_id=user.id)}
 
 @app.get("/repos")
 async def get_repos(user=Depends(get_current_user)):

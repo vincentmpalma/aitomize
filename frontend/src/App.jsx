@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { supabase } from './supabaseClient'
 import { Toaster, toast } from 'sonner'
+import ReactMarkdown from 'react-markdown'
 import './App.css'
 
 function Spinner() {
@@ -69,6 +70,7 @@ export default function App() {
   const [history, setHistory] = useState([])
   const messagesEndRef = useRef(null)
   const [session, setSession] = useState(null)
+  const [indexMode, setIndexMode] = useState('shared')
   const [isReposModal, setIsReposModal] = useState(false)
   const [repos, setRepos] = useState([])
   const [reposLoading, setReposLoading] = useState(false)
@@ -136,10 +138,44 @@ export default function App() {
         body: JSON.stringify({ repo_url: force ? indexedRepo : repoInput.trim(), force })
       })
       const data = await res.json()
-      console.log("data.status from ingest is: " + data.status)
       if (data.status === 'indexed' || data.status === 'already_indexed') {
         setIndexedRepo(force ? indexedRepo : repoInput.trim())
         setIndexState('success')
+        setIndexMode('shared')
+        if (force) {
+          setMessages([])
+          setHistory([])
+        }
+      } else {
+        setIndexState('failed')
+      }
+    } catch (err) {
+      console.error('Indexing error:', err)
+      setIndexState('failed')
+    }
+  }
+
+  async function handleIndexPersonal(repoUrl, force = false) {
+    if (!session?.provider_token) {
+      toast.error('Please sign out and back in to index your repos')
+      return
+    }
+    if (indexState === 'indexing') return
+    setIndexState('indexing')
+    try {
+      const res = await fetch('http://localhost:8000/ingest-personal', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ repo_url: repoUrl, force, provider_token: session.provider_token })
+      })
+      const data = await res.json()
+      if (data.status === 'indexed' || data.status === 'already_indexed') {
+        setIndexedRepo(repoUrl)
+        setIndexState('success')
+        setIndexMode('personal')
         if (force) {
           setMessages([])
           setHistory([])
@@ -164,9 +200,13 @@ export default function App() {
     setChatInput('')
     setIsTyping(true)
     try {
-      const res = await fetch('http://localhost:8000/query', {
+      const isPersonal = indexMode === 'personal'
+      const endpoint = isPersonal ? 'http://localhost:8000/query-personal' : 'http://localhost:8000/query'
+      const headers = { 'Content-Type': 'application/json' }
+      if (isPersonal) headers['Authorization'] = `Bearer ${session.access_token}`
+      const res = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           question: userMsg.text,
           repo_url: indexedRepo,
@@ -244,7 +284,7 @@ export default function App() {
                 <div className="indexed-badge">
                   <span className="indexed-label">{repoShortName}</span>
                 </div>
-                <button className="reindex-btn" onClick={() => handleIndex(true)} disabled={indexState === 'indexing'}>
+                <button className="reindex-btn" onClick={() => indexMode === 'personal' ? handleIndexPersonal(indexedRepo, true) : handleIndex(true)} disabled={indexState === 'indexing'}>
                   {indexState === 'indexing' ? <Spinner /> : <>Re-index <span className="reindex-chevron">›</span></>}
                 </button>
               </div>
@@ -328,7 +368,7 @@ export default function App() {
                   </div>
                 ) : (
                   <div key={i} className="message-row ai-row">
-                    <div className="ai-card">{msg.text}</div>
+                    <div className="ai-card"><ReactMarkdown>{msg.text}</ReactMarkdown></div>
                   </div>
                 )
               )}
@@ -383,8 +423,8 @@ export default function App() {
                 key={repo.id}
                 className="repo-row"
                 onClick={() => {
-                  setRepoInput(repo.html_url)
                   closeRepos()
+                  handleIndexPersonal(repo.html_url)
                 }}
               >
                 <span className="repo-name">{repo.full_name}</span>
