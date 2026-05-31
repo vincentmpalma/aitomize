@@ -178,11 +178,11 @@ def query_personal(body: QueryRequest, user=Depends(get_current_user)):
     return {"answer": run_query(body.question, body.repo_url, body.history, user_id=user.id)}
 
 @app.get("/repos")
-async def get_repos(user=Depends(get_current_user)):
-    username = user.user_metadata["user_name"]
-    headers = {"Authorization": f"token {os.getenv('GITHUB_TOKEN')}"}
+async def get_repos(user=Depends(get_current_user), x_provider_token: str = Header(None)):
+    token = x_provider_token or os.getenv("GITHUB_TOKEN")
+    headers = {"Authorization": f"token {token}"}
     response = requests.get(
-        f"https://api.github.com/users/{username}/repos?sort=updated&per_page=50",
+        "https://api.github.com/user/repos?sort=updated&per_page=100&visibility=all",
         headers=headers
     )
     return {"repos": response.json()}

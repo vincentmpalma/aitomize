@@ -88,6 +88,50 @@
   padding: 0 4px;
 }
 
+.sidebar-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 0 4px;
+}
+
+.sidebar-chat-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 8px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  transition: background 0.15s;
+}
+
+.sidebar-chat-item:hover {
+  background: var(--input-bg);
+}
+
+.sidebar-chat-item.active {
+  background: var(--input-bg);
+  font-weight: 600;
+}
+
+.sidebar-chat-lock {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.sidebar-chat-title {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .coming-soon-tag {
   display: inline-block;
   font-size: 11px;
@@ -787,10 +831,22 @@
 
   .modal-header {
     display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 18px 20px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .modal-header-top {
+    display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 18px 20px;
-    border-bottom: 1px solid var(--border);
+  }
+
+  .modal-disclaimer {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.5;
   }
 
   .modal-title {
@@ -812,6 +868,7 @@
       color: var(--text-h);
     }
   }
+
 
   .modal-body {
     overflow-y: auto;
@@ -851,6 +908,16 @@
     font-size: 13px;
     font-weight: 600;
     color: var(--text-h);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .repo-lock {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+    flex-shrink: 0;
   }
 
   .repo-desc {

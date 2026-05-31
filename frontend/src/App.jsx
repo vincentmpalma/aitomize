@@ -49,6 +49,15 @@ function ChevronIcon({ collapsed }) {
   )
 }
 
+function LockIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  )
+}
+
 function GitHubIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -57,6 +66,9 @@ function GitHubIcon() {
   )
 }
 
+function toShortName(url) {
+  return url.replace(/^https?:\/\/(www\.)?github\.com\//, '').replace(/\.git$/, '')
+}
 
 export default function App() {
   const [dark, setDark] = useState(false)
@@ -74,6 +86,8 @@ export default function App() {
   const [isReposModal, setIsReposModal] = useState(false)
   const [repos, setRepos] = useState([])
   const [reposLoading, setReposLoading] = useState(false)
+  const [chatId, setChatId] = useState(null)
+  const [chats, setChats] = useState([])
 
   const indexed = indexState === 'success'
 
@@ -87,14 +101,26 @@ export default function App() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session))
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => setSession(session))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session)
+      if (!session) { setChatId(null); setChats([]) }
+    })
     return () => subscription.unsubscribe()
   }, [])
+
+  useEffect(() => {
+    if (!session) return
+    supabase.from('chats').select('*').eq('user_id', session.user.id).order('created_at', { ascending: false })
+      .then(({ data, error }) => {
+        if (error) console.error('fetchChats error:', error)
+        setChats(data ?? [])
+      })
+  }, [session])
 
   async function handleLogin() {
     await supabase.auth.signInWithOAuth({
       provider: 'github',
-      options: { redirectTo: window.location.origin }
+      options: { redirectTo: window.location.origin, scopes: 'repo' }
     })
   }
 
@@ -111,7 +137,10 @@ export default function App() {
       setReposLoading(true)
        try {
       const res = await fetch('http://localhost:8000/repos', {
-        headers: { 'Authorization': `Bearer ${session.access_token}` }
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'X-Provider-Token': session.provider_token ?? ''
+        }
       })
       const data = await res.json()
       setRepos(data.repos)
@@ -128,6 +157,30 @@ export default function App() {
     setRepos([])
   }
 
+  async function createChat(repoUrl, isPersonal) {
+    if (!session) return null
+    const { data, error } = await supabase.from('chats').insert({
+      user_id: session.user.id,
+      repo_url: repoUrl,
+      title: toShortName(repoUrl),
+      is_personal: isPersonal
+    }).select().single()
+    if (error) console.error('createChat error:', error)
+    if (data) setChats(prev => [data, ...prev])
+    return data?.id ?? null
+  }
+
+  async function loadChat(chat) {
+    const { data: msgs, error } = await supabase.from('messages').select('*').eq('chat_id', chat.id).order('created_at')
+    if (error) console.error('loadChat error:', error)
+    setMessages((msgs ?? []).map(m => ({ role: m.role, text: m.content })))
+    setHistory((msgs ?? []).map(m => ({ role: m.role, content: m.content })))
+    setIndexedRepo(chat.repo_url)
+    setIndexMode(chat.is_personal ? 'personal' : 'shared')
+    setChatId(chat.id)
+    setIndexState('success')
+  }
+
   async function handleIndex(force = false) {
     if (!repoInput.trim() || indexState === 'indexing') return
     setIndexState('indexing')
@@ -139,12 +192,19 @@ export default function App() {
       })
       const data = await res.json()
       if (data.status === 'indexed' || data.status === 'already_indexed') {
-        setIndexedRepo(force ? indexedRepo : repoInput.trim())
+        const repoUrl = force ? indexedRepo : repoInput.trim()
+        setIndexedRepo(repoUrl)
         setIndexState('success')
         setIndexMode('shared')
         if (force) {
           setMessages([])
           setHistory([])
+          if (chatId) await supabase.from('messages').delete().eq('chat_id', chatId)
+        } else {
+          setMessages([])
+          setHistory([])
+          const id = await createChat(repoUrl, false)
+          setChatId(id)
         }
       } else {
         setIndexState('failed')
@@ -179,6 +239,12 @@ export default function App() {
         if (force) {
           setMessages([])
           setHistory([])
+          if (chatId) await supabase.from('messages').delete().eq('chat_id', chatId)
+        } else {
+          setMessages([])
+          setHistory([])
+          const id = await createChat(repoUrl, true)
+          setChatId(id)
         }
       } else {
         setIndexState('failed')
@@ -199,6 +265,10 @@ export default function App() {
     setMessages(prev => [...prev, userMsg])
     setChatInput('')
     setIsTyping(true)
+    if (chatId) {
+      const { error } = await supabase.from('messages').insert({ chat_id: chatId, role: 'user', content: userMsg.text })
+      if (error) console.error('save user message error:', error)
+    }
     try {
       const isPersonal = indexMode === 'personal'
       const endpoint = isPersonal ? 'http://localhost:8000/query-personal' : 'http://localhost:8000/query'
@@ -222,6 +292,10 @@ export default function App() {
         { role: 'user', content: userMsg.text },
         { role: 'assistant', content: answer }
       ])
+      if (chatId) {
+        const { error } = await supabase.from('messages').insert({ chat_id: chatId, role: 'assistant', content: answer })
+        if (error) console.error('save assistant message error:', error)
+      }
     } catch {
       setIsTyping(false)
       setMessages(prev => [...prev, { role: 'assistant', text: 'Something went wrong. Please try again.' }])
@@ -235,7 +309,7 @@ export default function App() {
     }
   }
 
-  const repoShortName = indexedRepo.replace(/^https?:\/\/(www\.)?github\.com\//, '').replace(/\.git$/, '')
+  const repoShortName = toShortName(indexedRepo)
 
   return (
     <div className="app">
@@ -258,7 +332,24 @@ export default function App() {
         {sidebarOpen && (
           <>
             <span className="sidebar-title">History</span>
-            <span className="sidebar-coming-soon"><span className="coming-soon-tag">Coming soon</span></span>
+            {session ? (
+              chats.length === 0 ? (
+                <span className="sidebar-empty">No chats yet</span>
+              ) : (
+                chats.map(chat => (
+                  <button
+                    key={chat.id}
+                    className={`sidebar-chat-item${chatId === chat.id ? ' active' : ''}`}
+                    onClick={() => loadChat(chat)}
+                  >
+                    {chat.is_personal && <span className="sidebar-chat-lock"><LockIcon /></span>}
+                    <span className="sidebar-chat-title">{chat.title}</span>
+                  </button>
+                ))
+              )
+            ) : (
+              <span className="sidebar-coming-soon"><span className="coming-soon-tag">Sign in for history</span></span>
+            )}
           </>
         )}
       </aside>
@@ -411,8 +502,13 @@ export default function App() {
             <div className="modal-backdrop" onClick={closeRepos}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <span className="modal-title">Your Repositories</span>
-          <button className="modal-close" onClick={closeRepos}>✕</button>
+          <div className="modal-header-top">
+            <span className="modal-title">Your Repositories</span>
+            <button className="modal-close" onClick={closeRepos}>✕</button>
+          </div>
+          <span className="modal-disclaimer">
+            Anyone can index public repos via a link. Private repos are only accessible to you. All indexed code (including private repos) is stored in Aitomize's database. While other users cannot access your private repos, the Aitomize team can view its code within our database. Be mindful of what private repos you choose to index.
+          </span>
         </div>
         <div className="modal-body">
           {reposLoading ? (
@@ -427,7 +523,10 @@ export default function App() {
                   handleIndexPersonal(repo.html_url)
                 }}
               >
-                <span className="repo-name">{repo.full_name}</span>
+                <span className="repo-name">
+                  {repo.private && <span className="repo-lock"><LockIcon /></span>}
+                  {repo.full_name}
+                </span>
                 {repo.description && <span className="repo-desc">{repo.description}</span>}
               </button>
             ))
