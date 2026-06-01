@@ -86,6 +86,10 @@ export default function App() {
   const [isReposModal, setIsReposModal] = useState(false)
   const [repos, setRepos] = useState([])
   const [reposLoading, setReposLoading] = useState(false)
+  const [isRepoActionsModal, setIsRepoActionsModal] = useState(false)
+  const [reindexConfirm, setReindexConfirm] = useState(false)
+  const [isAvatarDropdown, setIsAvatarDropdown] = useState(false)
+  const avatarRef = useRef(null)
   const [chatId, setChatId] = useState(null)
   const [chats, setChats] = useState([])
 
@@ -107,6 +111,15 @@ export default function App() {
     })
     return () => subscription.unsubscribe()
   }, [])
+
+  useEffect(() => {
+    if (!isAvatarDropdown) return
+    function handleClickOutside(e) {
+      if (avatarRef.current && !avatarRef.current.contains(e.target)) setIsAvatarDropdown(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [isAvatarDropdown])
 
   useEffect(() => {
     if (!session) return
@@ -349,8 +362,7 @@ export default function App() {
                     className={`sidebar-chat-item${chatId === chat.id ? ' active' : ''}`}
                     onClick={() => loadChat(chat)}
                   >
-                    {chat.is_personal && <span className="sidebar-chat-lock"><LockIcon /></span>}
-                    <span className="sidebar-chat-title">{chat.title}</span>
+                    <span className="sidebar-chat-title">{chat.title.split('/').slice(1).join('/') || chat.title}</span>
                   </button>
                 ))
               )
@@ -373,19 +385,20 @@ export default function App() {
         
         />
       <div className="main-column">
+        {indexState === 'indexing' && (
+          <>
+            <div className="index-progress-bar"><div className="index-progress-fill" /></div>
+            <p className="index-progress-hint">Large repositories may take a few minutes to index.</p>
+          </>
+        )}
         <nav className="navbar">
   
           <div className="navbar-side" />
           <div className="navbar-center">
             {indexed && (
-              <div className="navbar-indexed-row">
-                <div className="indexed-badge">
-                  <span className="indexed-label">{repoShortName}</span>
-                </div>
-                <button className="reindex-btn" onClick={() => indexMode === 'personal' ? handleIndexPersonal(indexedRepo, true) : handleIndex(true)} disabled={indexState === 'indexing'}>
-                  {indexState === 'indexing' ? <Spinner /> : <>Re-index <span className="reindex-chevron">›</span></>}
-                </button>
-              </div>
+              <button className="indexed-badge indexed-badge-btn" onClick={() => setIsRepoActionsModal(true)} disabled={indexState === 'indexing'}>
+                {indexState === 'indexing' ? <><Spinner /><span className="indexed-label">Indexing…</span></> : <><span className="indexed-label">{repoShortName}</span><span className="indexed-chevron">›</span></>}
+              </button>
             )}
             {indexState === 'failed' && (
               <div className="indexed-badge">
@@ -396,11 +409,24 @@ export default function App() {
           </div>
           <div className="navbar-right">
             {session ? (
-              <>
-                <button className="my-repos-btn" onClick={openRepos}>My Repos</button>
-                <img src={session.user.user_metadata.avatar_url} className="user-avatar" alt="avatar" />
-                <button className="logout-btn" onClick={handleLogout}>Sign out</button>
-              </>
+              <div className="avatar-menu" ref={avatarRef}>
+                <button className="avatar-btn" onClick={() => setIsAvatarDropdown(d => !d)}>
+                  <img src={session.user.user_metadata.avatar_url} className="user-avatar" alt="avatar" />
+                </button>
+                {isAvatarDropdown && (
+                  <div className="avatar-dropdown">
+                    <button className="avatar-dropdown-item" onClick={() => { setIsAvatarDropdown(false); openRepos() }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                      My Repos
+                    </button>
+                    <div className="avatar-dropdown-divider" />
+                    <button className="avatar-dropdown-item destructive" onClick={() => { setIsAvatarDropdown(false); handleLogout() }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                      Sign out
+                    </button>
+                  </div>
+                )}
+              </div>
             ) : (
               <button className="signin-btn" onClick={handleLogin}>
                 <GitHubIcon /> Sign in
@@ -510,11 +536,12 @@ export default function App() {
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <div className="modal-header-top">
+            <div className="modal-header-spacer" />
             <span className="modal-title">Your Repositories</span>
-            <button className="modal-close" onClick={closeRepos}>✕</button>
+            <button className="modal-close" onClick={closeRepos}>Done</button>
           </div>
           <span className="modal-disclaimer">
-            Anyone can index public repos via a link. Private repos are only accessible to you. All indexed code (including private repos) is stored in Aitomize's database. While other users cannot access your private repos, the Aitomize team can view its code within our database. Be mindful of what private repos you choose to index.
+            Private repos are only accessible to your account, but all indexed code is stored in Aitomize's database. Avoid indexing sensitive repositories.
           </span>
         </div>
         <div className="modal-body">
@@ -530,19 +557,66 @@ export default function App() {
                   handleIndexPersonal(repo.html_url)
                 }}
               >
-                <span className="repo-name">
-                  {repo.private && <span className="repo-lock"><LockIcon /></span>}
-                  {repo.full_name}
-                </span>
-                {repo.description && <span className="repo-desc">{repo.description}</span>}
+                <div className="repo-row-content">
+                  <span className="repo-name">
+                    {repo.full_name}
+                    {repo.private && <span className="repo-private-badge">Private</span>}
+                  </span>
+                  {repo.description && <span className="repo-desc">{repo.description}</span>}
+                </div>
+                <span className="repo-chevron">›</span>
               </button>
             ))
           )}
         </div>
+        <div className="modal-body-fade" />
       </div>
     </div>
           )
         }
+
+        {isRepoActionsModal && (
+          <div className="modal-backdrop" onClick={() => { setIsRepoActionsModal(false); setReindexConfirm(false) }}>
+            <div className="modal repo-actions-modal" onClick={e => e.stopPropagation()}>
+              <div className="modal-header">
+                <div className="modal-header-top">
+                  <div className="modal-header-spacer" />
+                  <div className="repo-actions-titles">
+                    <span className="repo-actions-subtitle">Repository</span>
+                    <span className="modal-title">{repoShortName}</span>
+                  </div>
+                  <button className="modal-close" onClick={() => { setIsRepoActionsModal(false); setReindexConfirm(false) }}>Cancel</button>
+                </div>
+              </div>
+              <div className="modal-body">
+                {reindexConfirm ? (
+                  <div className="repo-actions-confirm">
+                    <p className="repo-actions-confirm-title">Re-index Repository?</p>
+                    <p className="repo-actions-confirm-desc">This will rebuild embeddings and clear the current chat.</p>
+                    <div className="repo-actions-confirm-btns">
+                      <button className="repo-actions-confirm-cancel" onClick={() => setReindexConfirm(false)}>Cancel</button>
+                      <button className="repo-actions-confirm-go" onClick={() => {
+                        setIsRepoActionsModal(false)
+                        setReindexConfirm(false)
+                        indexMode === 'personal' ? handleIndexPersonal(indexedRepo, true) : handleIndex(true)
+                      }}>Re-index</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="repo-actions-list">
+                    <button className="repo-action-row" onClick={() => setReindexConfirm(true)}>
+                      <div className="repo-action-icon">↺</div>
+                      <div className="repo-action-text">
+                        <span className="repo-action-label">Re-index Repository</span>
+                        <span className="repo-action-desc">Re-fetch the repository and rebuild its embeddings. This will clear the current chat.</span>
+                      </div>
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
     </div>
   )
