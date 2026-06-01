@@ -277,23 +277,30 @@ export default function App() {
       const res = await fetch(endpoint, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          question: userMsg.text,
-          repo_url: indexedRepo,
-          history: history
-        })
+        body: JSON.stringify({ question: userMsg.text, repo_url: indexedRepo, history })
       })
-      const data = await res.json()
-      const answer = data.answer
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let fullText = ''
       setIsTyping(false)
-      setMessages(prev => [...prev, { role: 'assistant', text: answer }])
+      setMessages(prev => [...prev, { role: 'assistant', text: '' }])
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        fullText += decoder.decode(value, { stream: true })
+        setMessages(prev => {
+          const updated = [...prev]
+          updated[updated.length - 1] = { role: 'assistant', text: fullText }
+          return updated
+        })
+      }
       setHistory(prev => [
         ...prev,
         { role: 'user', content: userMsg.text },
-        { role: 'assistant', content: answer }
+        { role: 'assistant', content: fullText }
       ])
       if (chatId) {
-        const { error } = await supabase.from('messages').insert({ chat_id: chatId, role: 'assistant', content: answer })
+        const { error } = await supabase.from('messages').insert({ chat_id: chatId, role: 'assistant', content: fullText })
         if (error) console.error('save assistant message error:', error)
       }
     } catch {

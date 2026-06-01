@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from openai import OpenAI
 from supabase import create_client
@@ -80,13 +81,28 @@ def fetch_and_embed(repo_url, github_token):
     response = requests.get(tree_url, headers=headers)
     tree = response.json()
 
-    ALLOWED_EXTENSIONS = {".py", ".js", ".ts", ".jsx", ".tsx", ".md", ".json", ".html", ".css"}
-    EXCLUDED_FILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
+    ALLOWED_EXTENSIONS = {
+        ".js", ".ts", ".jsx", ".tsx", ".vue", ".svelte",
+        ".html", ".css", ".scss", ".sass",
+        ".py", ".rb", ".php", ".go", ".rs", ".java",
+        ".kt", ".cs", ".scala", ".swift",
+        ".c", ".h", ".cpp", ".cc", ".hpp",
+        ".json", ".yaml", ".yml", ".toml", ".xml",
+        ".md", ".mdx", ".graphql", ".gql", ".proto", ".sql",
+        ".sh", ".bash", ".zsh",
+    }
+    EXCLUDED_FILES = {
+        "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+        "bun.lockb", "composer.lock", "Gemfile.lock",
+        "poetry.lock", "Pipfile.lock",
+    }
     files = [
         item["path"] for item in tree.get("tree", [])
         if item["type"] == "blob"
         and os.path.splitext(item["path"])[1] in ALLOWED_EXTENSIONS
         and os.path.basename(item["path"]) not in EXCLUDED_FILES
+        and not item["path"].endswith(".min.js")
+        and not item["path"].endswith(".min.css")
     ]
 
     file_contents = []
@@ -103,7 +119,7 @@ def fetch_and_embed(repo_url, github_token):
 
     return embed_chunks(all_chunks)
 
-def run_query(question, repo_url, history, user_id=None):
+def build_query_messages(question, repo_url, history, user_id=None):
     response = client.embeddings.create(
         model="text-embedding-3-small",
         input=question
@@ -123,18 +139,24 @@ def run_query(question, repo_url, history, user_id=None):
         for match in results.data
     ])
 
-    messages = [
+    return [
         {"role": "system", "content": f"You are a helpful assistant that answers questions about a codebase. Use the following code snippets as context to answer the user's question.\n\n{context}"},
         *history,
         {"role": "user", "content": question}
     ]
 
-    chat_response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages
-    )
-
-    return chat_response.choices[0].message.content
+def stream_chat(messages):
+    def generate():
+        stream = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            stream=True
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+    return StreamingResponse(generate(), media_type="text/plain")
 
 @app.post("/ingest")
 def ingest(body: IngestRequest):
@@ -171,11 +193,13 @@ def ingest_personal(body: IngestPersonalRequest, user=Depends(get_current_user))
 
 @app.post("/query")
 def query(body: QueryRequest):
-    return {"answer": run_query(body.question, body.repo_url, body.history, user_id=None)}
+    messages = build_query_messages(body.question, body.repo_url, body.history, user_id=None)
+    return stream_chat(messages)
 
 @app.post("/query-personal")
 def query_personal(body: QueryRequest, user=Depends(get_current_user)):
-    return {"answer": run_query(body.question, body.repo_url, body.history, user_id=user.id)}
+    messages = build_query_messages(body.question, body.repo_url, body.history, user_id=user.id)
+    return stream_chat(messages)
 
 @app.get("/repos")
 async def get_repos(user=Depends(get_current_user), x_provider_token: str = Header(None)):
