@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "PowerShell(Get-ChildItem *)",
-      "Bash(npm install *)",
-      "Bash(git check-ignore *)"
-    ]
-  }
-}
