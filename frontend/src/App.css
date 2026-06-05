@@ -60,6 +60,10 @@
   display: flex;
   align-items: center;
   gap: 5px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
 }
 
 .sidebar-logo {
@@ -379,6 +383,10 @@
   }
 }
 
+.repo-action-row.destructive .repo-action-label {
+  color: #ff3b30;
+}
+
 .repo-action-icon {
   font-size: 20px;
   color: var(--text-muted);
@@ -459,6 +467,11 @@
 
 .repo-actions-confirm-go {
   background: var(--accent);
+  color: #fff;
+}
+
+.repo-actions-confirm-go.destructive {
+  background: #ff3b30;
   color: #fff;
 }
 

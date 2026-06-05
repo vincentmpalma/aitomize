@@ -4,6 +4,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from openai import OpenAI
 from supabase import create_client
+from typing import Optional
 import requests
 import os
 import base64
@@ -21,7 +22,7 @@ class IngestRequest(BaseModel):
 class IngestPersonalRequest(BaseModel):
     repo_url: str
     force: bool = False
-    provider_token: str
+    provider_token: Optional[str] = None
 
 class QueryRequest(BaseModel):
     question: str
@@ -96,11 +97,21 @@ def fetch_and_embed(repo_url, github_token):
         "bun.lockb", "composer.lock", "Gemfile.lock",
         "poetry.lock", "Pipfile.lock",
     }
+    EXCLUDED_DIRS = {
+        "node_modules", "vendor", ".git", ".svn", ".hg",
+        "dist", "build", "out", ".next", ".nuxt", ".output",
+        "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+        "venv", ".venv", "env", ".env",
+        ".idea", ".vscode", ".DS_Store",
+        "coverage", ".nyc_output", ".cache",
+        "target", "bin", "obj",
+    }
     files = [
         item["path"] for item in tree.get("tree", [])
         if item["type"] == "blob"
         and os.path.splitext(item["path"])[1] in ALLOWED_EXTENSIONS
         and os.path.basename(item["path"]) not in EXCLUDED_FILES
+        and not any(part in EXCLUDED_DIRS for part in item["path"].split("/"))
         and not item["path"].endswith(".min.js")
         and not item["path"].endswith(".min.css")
     ]
@@ -183,7 +194,7 @@ def ingest_personal(body: IngestPersonalRequest, user=Depends(get_current_user))
     if body.force:
         supabase.table("documents").delete().eq("repo_url", body.repo_url).eq("user_id", user_id).execute()
 
-    embedded_chunks = fetch_and_embed(body.repo_url, body.provider_token)
+    embedded_chunks = fetch_and_embed(body.repo_url, body.provider_token or os.getenv("GITHUB_TOKEN"))
     rows = [
         {"repo_url": body.repo_url, "file_path": c["path"], "content": c["content"], "embedding": c["embedding"], "user_id": user_id}
         for c in embedded_chunks

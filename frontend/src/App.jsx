@@ -88,10 +88,13 @@ export default function App() {
   const [reposLoading, setReposLoading] = useState(false)
   const [isRepoActionsModal, setIsRepoActionsModal] = useState(false)
   const [reindexConfirm, setReindexConfirm] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [isAvatarDropdown, setIsAvatarDropdown] = useState(false)
   const avatarRef = useRef(null)
   const [chatId, setChatId] = useState(null)
   const [chats, setChats] = useState([])
+  const [reindexing, setReindexing] = useState(false)
+  const chatIdRef = useRef(null)
 
   const indexed = indexState === 'success'
 
@@ -121,6 +124,8 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [isAvatarDropdown])
 
+  useEffect(() => { chatIdRef.current = chatId }, [chatId])
+
   useEffect(() => {
     if (!session) return
     supabase.from('chats').select('*').eq('user_id', session.user.id).order('created_at', { ascending: false })
@@ -137,8 +142,32 @@ export default function App() {
     })
   }
 
+  function resetToHome() {
+    setIndexState('idle')
+    setIndexedRepo('')
+    setMessages([])
+    setHistory([])
+    setChatId(null)
+    setIndexMode('shared')
+    setRepoInput('')
+  }
+
   async function handleLogout() {
     await supabase.auth.signOut()
+    resetToHome()
+  }
+
+  async function handleDeleteChat() {
+    setIsRepoActionsModal(false)
+    setDeleteConfirm(false)
+    if (chatId) {
+      await supabase.from('chats').delete().eq('id', chatId)
+      setChats(prev => prev.filter(c => c.id !== chatId))
+    }
+    if (indexedRepo && session) {
+      await supabase.from('documents').delete().eq('repo_url', indexedRepo).eq('user_id', session.user.id)
+    }
+    resetToHome()
   }
 
   async function openRepos(){
@@ -196,6 +225,10 @@ export default function App() {
 
   async function handleIndex(force = false) {
     if (!repoInput.trim() || indexState === 'indexing') return
+    if (session) {
+      await handleIndexPersonal(force ? indexedRepo : repoInput.trim(), force)
+      return
+    }
     setIndexState('indexing')
     try {
       const res = await fetch('http://localhost:8000/ingest', {
@@ -229,42 +262,44 @@ export default function App() {
   }
 
   async function handleIndexPersonal(repoUrl, force = false) {
-    if (!session?.provider_token) {
-      toast.error('Please sign out and back in to index your repos')
-      return
+    if (reindexing || indexState === 'indexing') return
+    if (force) {
+      setReindexing(true)
+    } else {
+      setIndexState('indexing')
     }
-    if (indexState === 'indexing') return
-    setIndexState('indexing')
     try {
+      const body = { repo_url: repoUrl, force }
+      if (session?.provider_token) body.provider_token = session.provider_token
       const res = await fetch('http://localhost:8000/ingest-personal', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`
         },
-        body: JSON.stringify({ repo_url: repoUrl, force, provider_token: session.provider_token })
+        body: JSON.stringify(body)
       })
       const data = await res.json()
       if (data.status === 'indexed' || data.status === 'already_indexed') {
         setIndexedRepo(repoUrl)
         setIndexState('success')
         setIndexMode('personal')
-        if (force) {
-          setMessages([])
-          setHistory([])
-          if (chatId) await supabase.from('messages').delete().eq('chat_id', chatId)
-        } else {
+        if (!force) {
           setMessages([])
           setHistory([])
           const id = await createChat(repoUrl, true)
           setChatId(id)
         }
       } else {
-        setIndexState('failed')
+        if (!force) setIndexState('failed')
+        else toast.error('Re-indexing failed. Please try again.')
       }
     } catch (err) {
       console.error('Indexing error:', err)
-      setIndexState('failed')
+      if (!force) setIndexState('failed')
+      else toast.error('Re-indexing failed. Please try again.')
+    } finally {
+      if (force) setReindexing(false)
     }
   }
 
@@ -273,13 +308,14 @@ export default function App() {
   }
 
   async function handleSend() {
-    if (!indexed || !chatInput.trim()) return
+    if (!indexed || !chatInput.trim() || reindexing) return
+    const activeChatId = chatId
     const userMsg = { role: 'user', text: chatInput.trim() }
     setMessages(prev => [...prev, userMsg])
     setChatInput('')
     setIsTyping(true)
-    if (chatId) {
-      const { error } = await supabase.from('messages').insert({ chat_id: chatId, role: 'user', content: userMsg.text })
+    if (activeChatId) {
+      const { error } = await supabase.from('messages').insert({ chat_id: activeChatId, role: 'user', content: userMsg.text })
       if (error) console.error('save user message error:', error)
     }
     try {
@@ -301,24 +337,30 @@ export default function App() {
         const { done, value } = await reader.read()
         if (done) break
         fullText += decoder.decode(value, { stream: true })
-        setMessages(prev => {
-          const updated = [...prev]
-          updated[updated.length - 1] = { role: 'assistant', text: fullText }
-          return updated
-        })
+        if (chatIdRef.current === activeChatId) {
+          setMessages(prev => {
+            const updated = [...prev]
+            updated[updated.length - 1] = { role: 'assistant', text: fullText }
+            return updated
+          })
+        }
       }
-      setHistory(prev => [
-        ...prev,
-        { role: 'user', content: userMsg.text },
-        { role: 'assistant', content: fullText }
-      ])
-      if (chatId) {
-        const { error } = await supabase.from('messages').insert({ chat_id: chatId, role: 'assistant', content: fullText })
+      if (chatIdRef.current === activeChatId) {
+        setHistory(prev => [
+          ...prev,
+          { role: 'user', content: userMsg.text },
+          { role: 'assistant', content: fullText }
+        ])
+      }
+      if (activeChatId) {
+        const { error } = await supabase.from('messages').insert({ chat_id: activeChatId, role: 'assistant', content: fullText })
         if (error) console.error('save assistant message error:', error)
       }
     } catch {
       setIsTyping(false)
-      setMessages(prev => [...prev, { role: 'assistant', text: 'Something went wrong. Please try again.' }])
+      if (chatIdRef.current === activeChatId) {
+        setMessages(prev => [...prev, { role: 'assistant', text: 'Something went wrong. Please try again.' }])
+      }
     }
   }
 
@@ -336,14 +378,14 @@ export default function App() {
       <aside className={`sidebar${sidebarOpen ? '' : ' sidebar-collapsed'}`}>
         <div className="sidebar-header">
           {sidebarOpen && (
-            <div className="sidebar-brand">
+            <button className="sidebar-brand" onClick={resetToHome}>
               <img
                 src={dark ? '/aitomize_logo_DARK.png' : '/aitomize_logo_LIGHT.png'}
                 alt="Aitomize logo"
                 className="sidebar-logo"
               />
               <span className="wordmark sidebar-wordmark">Aitomize</span>
-            </div>
+            </button>
           )}
           <button className="sidebar-toggle" onClick={() => setSidebarOpen(o => !o)} aria-label="Toggle sidebar">
             <ChevronIcon collapsed={!sidebarOpen} />
@@ -385,7 +427,7 @@ export default function App() {
         
         />
       <div className="main-column">
-        {indexState === 'indexing' && (
+        {(indexState === 'indexing' || reindexing) && (
           <>
             <div className="index-progress-bar"><div className="index-progress-fill" /></div>
             <p className="index-progress-hint">Large repositories may take a few minutes to index.</p>
@@ -396,8 +438,8 @@ export default function App() {
           <div className="navbar-side" />
           <div className="navbar-center">
             {indexed && (
-              <button className="indexed-badge indexed-badge-btn" onClick={() => setIsRepoActionsModal(true)} disabled={indexState === 'indexing'}>
-                {indexState === 'indexing' ? <><Spinner /><span className="indexed-label">Indexing…</span></> : <><span className="indexed-label">{repoShortName}</span><span className="indexed-chevron">›</span></>}
+              <button className="indexed-badge indexed-badge-btn" onClick={() => setIsRepoActionsModal(true)} disabled={indexState === 'indexing' || reindexing}>
+                {(indexState === 'indexing' || reindexing) ? <><Spinner /><span className="indexed-label">{reindexing ? 'Re-indexing…' : 'Indexing…'}</span></> : <><span className="indexed-label">{repoShortName}</span><span className="indexed-chevron">›</span></>}
               </button>
             )}
             {indexState === 'failed' && (
@@ -516,11 +558,12 @@ export default function App() {
                 onChange={e => setChatInput(e.target.value)}
                 onKeyDown={handleChatKeyDown}
                 rows={1}
+                disabled={reindexing}
               />
               <button
                 className="send-btn"
                 onClick={handleSend}
-                disabled={!chatInput.trim()}
+                disabled={!chatInput.trim() || reindexing}
                 aria-label="Send"
               >
                 <SendIcon />
@@ -576,7 +619,7 @@ export default function App() {
         }
 
         {isRepoActionsModal && (
-          <div className="modal-backdrop" onClick={() => { setIsRepoActionsModal(false); setReindexConfirm(false) }}>
+          <div className="modal-backdrop" onClick={() => { setIsRepoActionsModal(false); setReindexConfirm(false); setDeleteConfirm(false) }}>
             <div className="modal repo-actions-modal" onClick={e => e.stopPropagation()}>
               <div className="modal-header">
                 <div className="modal-header-top">
@@ -585,14 +628,14 @@ export default function App() {
                     <span className="repo-actions-subtitle">Repository</span>
                     <span className="modal-title">{repoShortName}</span>
                   </div>
-                  <button className="modal-close" onClick={() => { setIsRepoActionsModal(false); setReindexConfirm(false) }}>Cancel</button>
+                  <button className="modal-close" onClick={() => { setIsRepoActionsModal(false); setReindexConfirm(false); setDeleteConfirm(false) }}>Cancel</button>
                 </div>
               </div>
               <div className="modal-body">
                 {reindexConfirm ? (
                   <div className="repo-actions-confirm">
                     <p className="repo-actions-confirm-title">Re-index Repository?</p>
-                    <p className="repo-actions-confirm-desc">This will rebuild embeddings and clear the current chat.</p>
+                    <p className="repo-actions-confirm-desc">Re-fetch the repository and rebuild its embeddings. This will clear the current chat.</p>
                     <div className="repo-actions-confirm-btns">
                       <button className="repo-actions-confirm-cancel" onClick={() => setReindexConfirm(false)}>Cancel</button>
                       <button className="repo-actions-confirm-go" onClick={() => {
@@ -602,15 +645,33 @@ export default function App() {
                       }}>Re-index</button>
                     </div>
                   </div>
+                ) : deleteConfirm ? (
+                  <div className="repo-actions-confirm">
+                    <p className="repo-actions-confirm-title">Delete Chat?</p>
+                    <p className="repo-actions-confirm-desc">This will permanently delete this chat and all indexed data for this repository.</p>
+                    <div className="repo-actions-confirm-btns">
+                      <button className="repo-actions-confirm-cancel" onClick={() => setDeleteConfirm(false)}>Cancel</button>
+                      <button className="repo-actions-confirm-go destructive" onClick={handleDeleteChat}>Delete</button>
+                    </div>
+                  </div>
                 ) : (
                   <div className="repo-actions-list">
                     <button className="repo-action-row" onClick={() => setReindexConfirm(true)}>
                       <div className="repo-action-icon">↺</div>
                       <div className="repo-action-text">
                         <span className="repo-action-label">Re-index Repository</span>
-                        <span className="repo-action-desc">Re-fetch the repository and rebuild its embeddings. This will clear the current chat.</span>
+                        <span className="repo-action-desc">Re-fetch the repository and rebuild its embeddings.</span>
                       </div>
                     </button>
+                    {session && (
+                      <button className="repo-action-row destructive" onClick={() => setDeleteConfirm(true)}>
+                        <div className="repo-action-icon">🗑</div>
+                        <div className="repo-action-text">
+                          <span className="repo-action-label">Delete Chat</span>
+                          <span className="repo-action-desc">Remove this chat and all indexed data for this repository.</span>
+                        </div>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
