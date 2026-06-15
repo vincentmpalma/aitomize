@@ -66,12 +66,23 @@ function GitHubIcon() {
   )
 }
 
+const EXAMPLE_REPOS = [
+  'https://github.com/vincentmpalma/aitomize',
+]
+
+const PROMPT_SUGGESTIONS = [
+  'What does this repo do?',
+  'How is this project structured?',
+  'Where is authentication handled?',
+  'What should I read first?',
+]
+
 function toShortName(url) {
   return url.replace(/^https?:\/\/(www\.)?github\.com\//, '').replace(/\.git$/, '')
 }
 
 export default function App() {
-  const [dark, setDark] = useState(false)
+  const [dark, setDark] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [repoInput, setRepoInput] = useState('')
   const [indexState, setIndexState] = useState('idle')
@@ -307,10 +318,11 @@ export default function App() {
     if (e.key === 'Enter') handleIndex()
   }
 
-  async function handleSend() {
-    if (!indexed || !chatInput.trim() || reindexing) return
+  async function handleSend(overrideText) {
+    const text = typeof overrideText === 'string' ? overrideText : chatInput.trim()
+    if (!indexed || !text || reindexing) return
     const activeChatId = chatId
-    const userMsg = { role: 'user', text: chatInput.trim() }
+    const userMsg = { role: 'user', text }
     setMessages(prev => [...prev, userMsg])
     setChatInput('')
     setIsTyping(true)
@@ -409,7 +421,10 @@ export default function App() {
                 ))
               )
             ) : (
-              <span className="sidebar-coming-soon"><span className="coming-soon-tag">Sign in for history</span></span>
+              <button className="sidebar-signin-row" onClick={handleLogin}>
+                <span>Sign in to save history</span>
+                <span className="sidebar-signin-chevron">›</span>
+              </button>
             )}
           </>
         )}
@@ -516,6 +531,17 @@ export default function App() {
               {indexState === 'failed' && (
                 <p className="landing-error">Indexing failed. Please check the URL and try again.</p>
               )}
+              <button
+                className="example-repo-btn"
+                onClick={() => {
+                  const filtered = EXAMPLE_REPOS.filter(r => r !== repoInput)
+                  const pool = filtered.length ? filtered : EXAMPLE_REPOS
+                  setRepoInput(pool[Math.floor(Math.random() * pool.length)])
+                }}
+                disabled={indexState === 'indexing'}
+              >
+                Try an example
+              </button>
             </div>
           </div>
         ) : (
@@ -523,6 +549,13 @@ export default function App() {
             {messages.length === 0 && (
               <div className="empty-state">
                 <p className="empty-hint">Ask anything about your codebase.</p>
+                <div className="prompt-suggestions">
+                  {PROMPT_SUGGESTIONS.map(p => (
+                    <button key={p} className="prompt-pill" onClick={() => handleSend(p)} disabled={reindexing}>
+                      {p}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
