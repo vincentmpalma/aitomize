@@ -9,8 +9,62 @@ import requests
 import os
 import base64
 from dotenv import load_dotenv
+from tree_sitter import Language, Parser
 
 load_dotenv()
+
+# --- AST chunking setup ---
+
+_TS_LANGUAGES: dict[str, Language] = {}
+
+def _try_load(name: str, factory):
+    try:
+        _TS_LANGUAGES[name] = Language(factory())
+    except Exception as e:
+        print(f"[tree-sitter] skipping '{name}': {e}")
+
+_try_load('python',     lambda: __import__('tree_sitter_python').language())
+_try_load('javascript', lambda: __import__('tree_sitter_javascript').language())
+_try_load('go',         lambda: __import__('tree_sitter_go').language())
+_try_load('rust',       lambda: __import__('tree_sitter_rust').language())
+_try_load('java',       lambda: __import__('tree_sitter_java').language())
+_try_load('c',          lambda: __import__('tree_sitter_c').language())
+_try_load('cpp',        lambda: __import__('tree_sitter_cpp').language())
+_try_load('ruby',       lambda: __import__('tree_sitter_ruby').language())
+
+try:
+    import tree_sitter_typescript as _tst
+    _TS_LANGUAGES['typescript'] = Language(_tst.language_typescript())
+    _TS_LANGUAGES['tsx']        = Language(_tst.language_tsx())
+except Exception as e:
+    print(f"[tree-sitter] skipping typescript: {e}")
+
+EXT_TO_LANG = {
+    '.py': 'python',
+    '.js': 'javascript', '.jsx': 'javascript',
+    '.ts': 'typescript', '.tsx': 'tsx',
+    '.go': 'go',
+    '.rs': 'rust',
+    '.java': 'java',
+    '.c': 'c', '.h': 'c',
+    '.cpp': 'cpp', '.cc': 'cpp', '.hpp': 'cpp',
+    '.rb': 'ruby',
+}
+
+CHUNK_NODE_TYPES: dict[str, set[str]] = {
+    'python':     {'function_definition', 'decorated_definition'},
+    'javascript': {'function_declaration', 'method_definition'},
+    'typescript': {'function_declaration', 'method_definition'},
+    'tsx':        {'function_declaration', 'method_definition'},
+    'go':         {'function_declaration', 'method_declaration'},
+    'rust':       {'function_item'},
+    'java':       {'method_declaration', 'constructor_declaration'},
+    'c':          {'function_definition'},
+    'cpp':        {'function_definition'},
+    'ruby':       {'method', 'singleton_method'},
+}
+
+MAX_AST_CHUNK_LINES = 80
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
@@ -52,16 +106,53 @@ async def get_current_user(authorization: str = Header(None)):
 def health():
     return {"status": "ok"}
 
-def chunk_file(path, content, chunk_size=30, overlap=5):
+def _line_chunk(path, content, chunk_size=30, overlap=5):
     lines = content.split("\n")
     chunks = []
     i = 0
     while i < len(lines):
-        chunk_lines = lines[i:i + chunk_size]
-        chunk_text = "\n".join(chunk_lines)
-        chunks.append({"path": path, "content": chunk_text})
+        chunks.append({"path": path, "content": "\n".join(lines[i:i + chunk_size])})
         i += chunk_size - overlap
     return chunks
+
+def _ast_chunk(path, content, lang_name):
+    lang = _TS_LANGUAGES[lang_name]
+    parser = Parser(lang)
+    tree = parser.parse(bytes(content, 'utf-8'))
+    target_types = CHUNK_NODE_TYPES.get(lang_name, set())
+    lines = content.split('\n')
+    chunks = []
+
+    def walk(node):
+        if node.type in target_types:
+            start = node.start_point[0]
+            end = node.end_point[0] + 1
+            node_lines = lines[start:end]
+            if len(node_lines) > MAX_AST_CHUNK_LINES:
+                chunks.extend(_line_chunk(path, "\n".join(node_lines)))
+            else:
+                chunks.append({
+                    "path": path,
+                    "content": f"# {path} lines {start + 1}-{end}\n" + "\n".join(node_lines)
+                })
+            return
+        for child in node.children:
+            walk(child)
+
+    walk(tree.root_node)
+    return chunks
+
+def chunk_file(path, content, chunk_size=30, overlap=5):
+    ext = os.path.splitext(path)[1]
+    lang_name = EXT_TO_LANG.get(ext)
+    if lang_name and lang_name in _TS_LANGUAGES:
+        try:
+            chunks = _ast_chunk(path, content, lang_name)
+            if chunks:
+                return chunks
+        except Exception as e:
+            print(f"[tree-sitter] AST chunking failed for {path}: {e}")
+    return _line_chunk(path, content, chunk_size, overlap)
 
 def embed_chunks(chunks):
     for chunk in chunks:
