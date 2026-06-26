@@ -8,6 +8,7 @@ from typing import Optional
 import requests
 import os
 import base64
+import re
 from dotenv import load_dotenv
 from tree_sitter import Language, Parser
 
@@ -82,6 +83,10 @@ class QueryRequest(BaseModel):
     question: str
     repo_url: str
     history: list
+
+class SourcesRequest(BaseModel):
+    question: str
+    repo_url: str
 
 app = FastAPI()
 
@@ -302,6 +307,41 @@ def query(body: QueryRequest):
 def query_personal(body: QueryRequest, user=Depends(get_current_user)):
     messages = build_query_messages(body.question, body.repo_url, body.history, user_id=user.id)
     return stream_chat(messages)
+
+def _parse_sources(results):
+    sources = []
+    for match in results.data:
+        source = {"file": match["file_path"]}
+        m = re.match(r'^# .+ lines (\d+)-(\d+)', match["content"])
+        if m:
+            source["start"] = int(m.group(1))
+            source["end"] = int(m.group(2))
+        sources.append(source)
+    return sources
+
+@app.post("/sources")
+def get_sources(body: SourcesRequest):
+    response = client.embeddings.create(model="text-embedding-3-small", input=body.question)
+    results = supabase.rpc("match_documents", {
+        "query_embedding": response.data[0].embedding,
+        "match_threshold": 0.1,
+        "match_count": 8,
+        "filter_repo_url": body.repo_url,
+        "filter_user_id": None
+    }).execute()
+    return {"sources": _parse_sources(results)}
+
+@app.post("/sources-personal")
+def get_sources_personal(body: SourcesRequest, user=Depends(get_current_user)):
+    response = client.embeddings.create(model="text-embedding-3-small", input=body.question)
+    results = supabase.rpc("match_documents", {
+        "query_embedding": response.data[0].embedding,
+        "match_threshold": 0.1,
+        "match_count": 8,
+        "filter_repo_url": body.repo_url,
+        "filter_user_id": user.id
+    }).execute()
+    return {"sources": _parse_sources(results)}
 
 @app.get("/repos")
 async def get_repos(user=Depends(get_current_user), x_provider_token: str = Header(None)):

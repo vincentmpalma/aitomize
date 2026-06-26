@@ -935,6 +935,25 @@
   animation: slideUp 0.2s ease;
 }
 
+.source-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.source-pill {
+  font-size: 11.5px;
+  font-family: var(--mono, monospace);
+  color: var(--text-muted);
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+}
+
 .ai-card p { margin: 0 0 10px; }
 .ai-card p:last-child { margin-bottom: 0; }
 .ai-card ol, .ai-card ul { margin: 0 0 10px; padding-left: 20px; }

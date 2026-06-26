@@ -333,8 +333,16 @@ export default function App() {
     try {
       const isPersonal = indexMode === 'personal'
       const endpoint = isPersonal ? 'http://localhost:8000/query-personal' : 'http://localhost:8000/query'
+      const sourcesEndpoint = isPersonal ? 'http://localhost:8000/sources-personal' : 'http://localhost:8000/sources'
       const headers = { 'Content-Type': 'application/json' }
       if (isPersonal) headers['Authorization'] = `Bearer ${session.access_token}`
+
+      const sourcesPromise = fetch(sourcesEndpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ question: userMsg.text, repo_url: indexedRepo })
+      }).then(r => r.json()).catch(() => ({ sources: [] }))
+
       const res = await fetch(endpoint, {
         method: 'POST',
         headers,
@@ -357,7 +365,13 @@ export default function App() {
           })
         }
       }
+      const { sources } = await sourcesPromise
       if (chatIdRef.current === activeChatId) {
+        setMessages(prev => {
+          const updated = [...prev]
+          updated[updated.length - 1] = { role: 'assistant', text: fullText, sources: sources ?? [] }
+          return updated
+        })
         setHistory(prev => [
           ...prev,
           { role: 'user', content: userMsg.text },
@@ -567,7 +581,18 @@ export default function App() {
                   </div>
                 ) : (
                   <div key={i} className="message-row ai-row">
-                    <div className="ai-card"><ReactMarkdown>{msg.text}</ReactMarkdown></div>
+                    <div className="ai-card">
+                      <ReactMarkdown>{msg.text}</ReactMarkdown>
+                      {msg.sources && msg.sources.length > 0 && (
+                        <div className="source-pills">
+                          {msg.sources.slice(0, 5).map((s, j) => (
+                            <span key={j} className="source-pill">
+                              {s.file.split('/').pop()}{s.start ? `:${s.start}–${s.end}` : ''}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )
               )}
