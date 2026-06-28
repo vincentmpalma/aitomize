@@ -66,6 +66,8 @@ function GitHubIcon() {
   )
 }
 
+const API_URL = import.meta.env.VITE_API_URL
+
 const EXAMPLE_REPOS = [
   'https://github.com/vincentmpalma/aitomize',
 ]
@@ -106,6 +108,7 @@ export default function App() {
   const [chats, setChats] = useState([])
   const [reindexing, setReindexing] = useState(false)
   const chatIdRef = useRef(null)
+  const [repoSearch, setRepoSearch] = useState('')
 
   const indexed = indexState === 'success'
 
@@ -189,13 +192,18 @@ export default function App() {
       setIsReposModal(true)
       setReposLoading(true)
        try {
-      const res = await fetch('http://localhost:8000/repos', {
+      const res = await fetch(`${API_URL}/repos`, {
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
           'X-Provider-Token': session.provider_token ?? ''
         }
       })
       const data = await res.json()
+      if (!Array.isArray(data.repos)) {
+        toast.error('Failed to load repos')
+        setReposLoading(false)
+        return
+      }
       setRepos(data.repos)
     } catch {
       toast.error('Failed to load repos')
@@ -208,6 +216,7 @@ export default function App() {
   function closeRepos() {
     setIsReposModal(false)
     setRepos([])
+    setRepoSearch('')
   }
 
   async function createChat(repoUrl, isPersonal) {
@@ -242,11 +251,17 @@ export default function App() {
     }
     setIndexState('indexing')
     try {
-      const res = await fetch('http://localhost:8000/ingest', {
+      const res = await fetch(`${API_URL}/ingest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ repo_url: force ? indexedRepo : repoInput.trim(), force })
       })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setIndexState('idle')
+        toast.error(err.detail || 'Indexing failed. Please try again.')
+        return
+      }
       const data = await res.json()
       if (data.status === 'indexed' || data.status === 'already_indexed') {
         const repoUrl = force ? indexedRepo : repoInput.trim()
@@ -282,7 +297,7 @@ export default function App() {
     try {
       const body = { repo_url: repoUrl, force }
       if (session?.provider_token) body.provider_token = session.provider_token
-      const res = await fetch('http://localhost:8000/ingest-personal', {
+      const res = await fetch(`${API_URL}/ingest-personal`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -290,6 +305,13 @@ export default function App() {
         },
         body: JSON.stringify(body)
       })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        if (!force) setIndexState('idle')
+        else setReindexing(false)
+        toast.error(err.detail || 'Indexing failed. Please try again.')
+        return
+      }
       const data = await res.json()
       if (data.status === 'indexed' || data.status === 'already_indexed') {
         setIndexedRepo(repoUrl)
@@ -332,8 +354,8 @@ export default function App() {
     }
     try {
       const isPersonal = indexMode === 'personal'
-      const endpoint = isPersonal ? 'http://localhost:8000/query-personal' : 'http://localhost:8000/query'
-      const sourcesEndpoint = isPersonal ? 'http://localhost:8000/sources-personal' : 'http://localhost:8000/sources'
+      const endpoint = isPersonal ? `${API_URL}/query-personal` : `${API_URL}/query`
+      const sourcesEndpoint = isPersonal ? `${API_URL}/sources-personal` : `${API_URL}/sources`
       const headers = { 'Content-Type': 'application/json' }
       if (isPersonal) headers['Authorization'] = `Bearer ${session.access_token}`
 
@@ -348,6 +370,13 @@ export default function App() {
         headers,
         body: JSON.stringify({ question: userMsg.text, repo_url: indexedRepo, history })
       })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setIsTyping(false)
+        setMessages(prev => prev.slice(0, -1))
+        toast.error(err.detail || 'Something went wrong. Please try again.')
+        return
+      }
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let fullText = ''
@@ -503,9 +532,6 @@ export default function App() {
                 <GitHubIcon /> Sign in
               </button>
             )}
-            <button className="theme-toggle" onClick={() => setDark(d => !d)} aria-label="Toggle theme">
-              {dark ? <SunIcon /> : <MoonIcon />}
-            </button>
           </div>
         </nav>
 
@@ -644,12 +670,26 @@ export default function App() {
           <span className="modal-disclaimer">
             Private repos are only accessible to your account, but all indexed code is stored in Aitomize's database. Avoid indexing sensitive repositories.
           </span>
+          <input
+            className="modal-search"
+            type="text"
+            placeholder="Search repositories…"
+            value={repoSearch}
+            onChange={e => setRepoSearch(e.target.value)}
+            autoFocus={!reposLoading}
+          />
         </div>
         <div className="modal-body">
           {reposLoading ? (
             <div className="modal-loading"><Spinner /></div>
-          ) : (
-            repos.map(repo => (
+          ) : (() => {
+            const filtered = repos.filter(r =>
+              r.full_name.toLowerCase().includes(repoSearch.toLowerCase()) ||
+              (r.description && r.description.toLowerCase().includes(repoSearch.toLowerCase()))
+            )
+            return filtered.length === 0 ? (
+              <p className="modal-no-results">No repositories match "{repoSearch}"</p>
+            ) : filtered.map(repo => (
               <button
                 key={repo.id}
                 className="repo-row"
@@ -668,7 +708,7 @@ export default function App() {
                 <span className="repo-chevron">›</span>
               </button>
             ))
-          )}
+          })()}
         </div>
         <div className="modal-body-fade" />
       </div>

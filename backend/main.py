@@ -1,16 +1,20 @@
-from fastapi import FastAPI, Depends, Header, HTTPException
+from fastapi import FastAPI, Depends, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from openai import OpenAI
 from supabase import create_client
 from typing import Optional
+from collections import defaultdict
+from datetime import datetime, timedelta
+import threading
 import requests
 import os
 import base64
 import re
 from dotenv import load_dotenv
 from tree_sitter import Language, Parser
+from openai import RateLimitError as OpenAIRateLimitError
 
 load_dotenv()
 
@@ -67,6 +71,37 @@ CHUNK_NODE_TYPES: dict[str, set[str]] = {
 
 MAX_AST_CHUNK_LINES = 80
 
+# --- Rate limiting ---
+RATE_WINDOW_SECONDS = 86_400  # 24 hours
+
+ANON_INDEX_LIMIT = 3   # anon: repo indexes per day
+ANON_QUERY_LIMIT = 15  # anon: messages per day
+USER_INDEX_LIMIT = 3   # signed-in: repo indexes per day
+USER_QUERY_LIMIT = 15  # signed-in: messages per day
+
+class _RateLimiter:
+    def __init__(self):
+        self._store: dict[str, list] = defaultdict(list)
+        self._lock = threading.Lock()
+
+    def is_allowed(self, key: str, limit: int, window: int) -> bool:
+        now = datetime.utcnow()
+        cutoff = now - timedelta(seconds=window)
+        with self._lock:
+            self._store[key] = [t for t in self._store[key] if t > cutoff]
+            if len(self._store[key]) >= limit:
+                return False
+            self._store[key].append(now)
+            return True
+
+_limiter = _RateLimiter()
+
+def _get_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
 
@@ -84,6 +119,9 @@ class QueryRequest(BaseModel):
     repo_url: str
     history: list
 
+    def trimmed_history(self):
+        return self.history[-20:]
+
 class SourcesRequest(BaseModel):
     question: str
     repo_url: str
@@ -92,7 +130,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173")],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -161,22 +199,37 @@ def chunk_file(path, content, chunk_size=30, overlap=5):
 
 def embed_chunks(chunks):
     for chunk in chunks:
-        response = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=chunk["content"]
-        )
+        try:
+            response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=chunk["content"]
+            )
+        except OpenAIRateLimitError:
+            raise HTTPException(status_code=503, detail="Service temporarily unavailable. Please try again later.")
         chunk["embedding"] = response.data[0].embedding
     return chunks
 
+def _parse_github_url(repo_url: str):
+    match = re.match(r"^https?://github\.com/([^/]+)/([^/.]+)(?:\.git)?/?$", repo_url.strip())
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid GitHub repository URL.")
+    return match.group(1), match.group(2)
+
 def fetch_and_embed(repo_url, github_token):
-    parts = repo_url.rstrip("/").split("/")
-    owner = parts[-2]
-    repo = parts[-1]
+    owner, repo = _parse_github_url(repo_url)
     headers = {"Authorization": f"token {github_token}"}
 
     tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1"
     response = requests.get(tree_url, headers=headers)
     tree = response.json()
+
+    if "tree" not in tree:
+        message = tree.get("message", "")
+        if "Not Found" in message:
+            raise HTTPException(status_code=404, detail="Repository not found or is private.")
+        if "rate limit" in message.lower():
+            raise HTTPException(status_code=429, detail="GitHub API rate limit reached. Try again later.")
+        raise HTTPException(status_code=400, detail=f"Could not access repository: {message or 'unknown error'}")
 
     ALLOWED_EXTENSIONS = {
         ".js", ".ts", ".jsx", ".tsx", ".vue", ".svelte",
@@ -212,11 +265,16 @@ def fetch_and_embed(repo_url, github_token):
         and not item["path"].endswith(".min.css")
     ]
 
+    if not files:
+        raise HTTPException(status_code=400, detail="No supported code files found in this repository.")
+
     file_contents = []
     for file_path in files:
         file_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}"
         file_response = requests.get(file_url, headers=headers)
         file_data = file_response.json()
+        if "content" not in file_data:
+            continue
         content = base64.b64decode(file_data["content"]).decode("utf-8", errors="ignore")
         file_contents.append({"path": file_path, "content": content})
 
@@ -224,13 +282,19 @@ def fetch_and_embed(repo_url, github_token):
     for file in file_contents:
         all_chunks.extend(chunk_file(file["path"], file["content"]))
 
+    if not all_chunks:
+        raise HTTPException(status_code=400, detail="No indexable code chunks found in this repository.")
+
     return embed_chunks(all_chunks)
 
 def build_query_messages(question, repo_url, history, user_id=None):
-    response = client.embeddings.create(
-        model="text-embedding-3-small",
-        input=question
-    )
+    try:
+        response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=question
+        )
+    except OpenAIRateLimitError:
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable. Please try again later.")
     question_embedding = response.data[0].embedding
 
     results = supabase.rpc("match_documents", {
@@ -254,19 +318,25 @@ def build_query_messages(question, repo_url, history, user_id=None):
 
 def stream_chat(messages):
     def generate():
-        stream = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            stream=True
-        )
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        try:
+            stream = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                stream=True
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        except OpenAIRateLimitError:
+            yield "[Service temporarily unavailable. Please try again later.]"
     return StreamingResponse(generate(), media_type="text/plain")
 
 @app.post("/ingest")
-def ingest(body: IngestRequest):
+def ingest(body: IngestRequest, request: Request):
+    ip = _get_ip(request)
+    if not _limiter.is_allowed(f"index:anon:{ip}", ANON_INDEX_LIMIT, RATE_WINDOW_SECONDS):
+        raise HTTPException(status_code=429, detail="Index limit reached. Try again tomorrow.")
     existing = supabase.table("documents").select("id").eq("repo_url", body.repo_url).is_("user_id", "null").limit(1).execute()
     if existing.data and not body.force:
         return {"status": "already_indexed"}
@@ -283,6 +353,8 @@ def ingest(body: IngestRequest):
 
 @app.post("/ingest-personal")
 def ingest_personal(body: IngestPersonalRequest, user=Depends(get_current_user)):
+    if not _limiter.is_allowed(f"index:user:{user.id}", USER_INDEX_LIMIT, RATE_WINDOW_SECONDS):
+        raise HTTPException(status_code=429, detail="Index limit reached. Try again tomorrow.")
     user_id = user.id
     existing = supabase.table("documents").select("id").eq("repo_url", body.repo_url).eq("user_id", user_id).limit(1).execute()
     if existing.data and not body.force:
@@ -299,13 +371,18 @@ def ingest_personal(body: IngestPersonalRequest, user=Depends(get_current_user))
     return {"status": "indexed", "stored": len(rows)}
 
 @app.post("/query")
-def query(body: QueryRequest):
-    messages = build_query_messages(body.question, body.repo_url, body.history, user_id=None)
+def query(body: QueryRequest, request: Request):
+    ip = _get_ip(request)
+    if not _limiter.is_allowed(f"query:anon:{ip}", ANON_QUERY_LIMIT, RATE_WINDOW_SECONDS):
+        raise HTTPException(status_code=429, detail="Message limit reached. Try again tomorrow.")
+    messages = build_query_messages(body.question, body.repo_url, body.trimmed_history(), user_id=None)
     return stream_chat(messages)
 
 @app.post("/query-personal")
 def query_personal(body: QueryRequest, user=Depends(get_current_user)):
-    messages = build_query_messages(body.question, body.repo_url, body.history, user_id=user.id)
+    if not _limiter.is_allowed(f"query:user:{user.id}", USER_QUERY_LIMIT, RATE_WINDOW_SECONDS):
+        raise HTTPException(status_code=429, detail="Message limit reached. Try again tomorrow.")
+    messages = build_query_messages(body.question, body.repo_url, body.trimmed_history(), user_id=user.id)
     return stream_chat(messages)
 
 def _parse_sources(results):
@@ -320,8 +397,14 @@ def _parse_sources(results):
     return sources
 
 @app.post("/sources")
-def get_sources(body: SourcesRequest):
-    response = client.embeddings.create(model="text-embedding-3-small", input=body.question)
+def get_sources(body: SourcesRequest, request: Request):
+    ip = _get_ip(request)
+    if not _limiter.is_allowed(f"query:anon:{ip}", ANON_QUERY_LIMIT, RATE_WINDOW_SECONDS):
+        return {"sources": []}
+    try:
+        response = client.embeddings.create(model="text-embedding-3-small", input=body.question)
+    except OpenAIRateLimitError:
+        return {"sources": []}
     results = supabase.rpc("match_documents", {
         "query_embedding": response.data[0].embedding,
         "match_threshold": 0.1,
@@ -333,7 +416,12 @@ def get_sources(body: SourcesRequest):
 
 @app.post("/sources-personal")
 def get_sources_personal(body: SourcesRequest, user=Depends(get_current_user)):
-    response = client.embeddings.create(model="text-embedding-3-small", input=body.question)
+    if not _limiter.is_allowed(f"query:user:{user.id}", USER_QUERY_LIMIT, RATE_WINDOW_SECONDS):
+        return {"sources": []}
+    try:
+        response = client.embeddings.create(model="text-embedding-3-small", input=body.question)
+    except OpenAIRateLimitError:
+        return {"sources": []}
     results = supabase.rpc("match_documents", {
         "query_embedding": response.data[0].embedding,
         "match_threshold": 0.1,
@@ -351,4 +439,10 @@ async def get_repos(user=Depends(get_current_user), x_provider_token: str = Head
         "https://api.github.com/user/repos?sort=updated&per_page=100&visibility=all",
         headers=headers
     )
+    if not response.ok:
+        data = response.json()
+        message = data.get("message", "")
+        if "rate limit" in message.lower():
+            raise HTTPException(status_code=429, detail="GitHub API rate limit reached. Try again later.")
+        raise HTTPException(status_code=502, detail="Failed to fetch repositories from GitHub.")
     return {"repos": response.json()}
