@@ -179,7 +179,10 @@ export default function App() {
       setChats(prev => prev.filter(c => c.id !== chatId))
     }
     if (indexedRepo && session) {
-      await supabase.from('documents').delete().eq('repo_url', indexedRepo).eq('user_id', session.user.id)
+      await fetch(`${API_URL}/delete-repo?repo_url=${encodeURIComponent(indexedRepo)}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${session.access_token}` }
+      })
     }
     resetToHome()
   }

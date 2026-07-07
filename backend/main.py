@@ -71,7 +71,7 @@ CHUNK_NODE_TYPES: dict[str, set[str]] = {
 
 MAX_AST_CHUNK_LINES = 80
 
-BATCH_EMBEDDINGS = True  # False = sequential (baseline), True = batched
+BATCH_EMBEDDINGS = True
 
 # --- Rate limiting ---
 RATE_WINDOW_SECONDS = 86_400  # 24 hours
@@ -316,7 +316,6 @@ def build_query_messages(question, repo_url, history, user_id=None):
         raise HTTPException(status_code=503, detail="Service temporarily unavailable. Please try again later.")
     question_embedding = response.data[0].embedding
 
-    _t0 = datetime.utcnow()
     results = supabase.rpc("match_documents", {
         "query_embedding": question_embedding,
         "match_threshold": 0.1,
@@ -324,7 +323,6 @@ def build_query_messages(question, repo_url, history, user_id=None):
         "filter_repo_url": repo_url,
         "filter_user_id": user_id
     }).execute()
-    print(f"[perf] retrieval latency: {(datetime.utcnow() - _t0).total_seconds() * 1000:.0f}ms")
 
     context = "\n\n".join([
         f"File: {match['file_path']}\n{match['content']}"
@@ -390,6 +388,11 @@ def ingest_personal(body: IngestPersonalRequest, user=Depends(get_current_user))
     ]
     _insert_batched(rows)
     return {"status": "indexed", "stored": len(rows), "file_count": file_count, "total_lines": total_lines}
+
+@app.delete("/delete-repo")
+def delete_repo(repo_url: str, user=Depends(get_current_user)):
+    supabase.table("documents").delete().eq("repo_url", repo_url).eq("user_id", user.id).execute()
+    return {"status": "deleted"}
 
 @app.post("/query")
 def query(body: QueryRequest, request: Request):
