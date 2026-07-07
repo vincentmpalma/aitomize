@@ -71,13 +71,15 @@ CHUNK_NODE_TYPES: dict[str, set[str]] = {
 
 MAX_AST_CHUNK_LINES = 80
 
+BATCH_EMBEDDINGS = True  # False = sequential (baseline), True = batched
+
 # --- Rate limiting ---
 RATE_WINDOW_SECONDS = 86_400  # 24 hours
 
-ANON_INDEX_LIMIT = 3   # anon: repo indexes per day
-ANON_QUERY_LIMIT = 15  # anon: messages per day
-USER_INDEX_LIMIT = 3   # signed-in: repo indexes per day
-USER_QUERY_LIMIT = 15  # signed-in: messages per day
+ANON_INDEX_LIMIT = 5    # anon: repo indexes per day
+ANON_QUERY_LIMIT = 100  # anon: messages per day
+USER_INDEX_LIMIT = 5    # signed-in: repo indexes per day
+USER_QUERY_LIMIT = 100  # signed-in: messages per day
 
 class _RateLimiter:
     def __init__(self):
@@ -197,16 +199,31 @@ def chunk_file(path, content, chunk_size=30, overlap=5):
             print(f"[tree-sitter] AST chunking failed for {path}: {e}")
     return _line_chunk(path, content, chunk_size, overlap)
 
-def embed_chunks(chunks):
-    for chunk in chunks:
-        try:
-            response = client.embeddings.create(
-                model="text-embedding-3-small",
-                input=chunk["content"]
-            )
-        except OpenAIRateLimitError:
-            raise HTTPException(status_code=503, detail="Service temporarily unavailable. Please try again later.")
-        chunk["embedding"] = response.data[0].embedding
+def _insert_batched(rows, batch_size=100):
+    for i in range(0, len(rows), batch_size):
+        supabase.table("documents").insert(rows[i:i + batch_size]).execute()
+
+def embed_chunks(chunks, batch_size=500):
+    chunks = [c for c in chunks if c["content"].strip()]
+    try:
+        if BATCH_EMBEDDINGS:
+            for i in range(0, len(chunks), batch_size):
+                batch = chunks[i:i + batch_size]
+                response = client.embeddings.create(
+                    model="text-embedding-3-small",
+                    input=[c["content"] for c in batch]
+                )
+                for chunk, embedding_obj in zip(batch, response.data):
+                    chunk["embedding"] = embedding_obj.embedding
+        else:
+            for chunk in chunks:
+                response = client.embeddings.create(
+                    model="text-embedding-3-small",
+                    input=chunk["content"]
+                )
+                chunk["embedding"] = response.data[0].embedding
+    except OpenAIRateLimitError:
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable. Please try again later.")
     return chunks
 
 def _parse_github_url(repo_url: str):
@@ -285,7 +302,9 @@ def fetch_and_embed(repo_url, github_token):
     if not all_chunks:
         raise HTTPException(status_code=400, detail="No indexable code chunks found in this repository.")
 
-    return embed_chunks(all_chunks)
+    file_count = len(file_contents)
+    total_lines = sum(len(f["content"].split("\n")) for f in file_contents)
+    return embed_chunks(all_chunks), file_count, total_lines
 
 def build_query_messages(question, repo_url, history, user_id=None):
     try:
@@ -297,6 +316,7 @@ def build_query_messages(question, repo_url, history, user_id=None):
         raise HTTPException(status_code=503, detail="Service temporarily unavailable. Please try again later.")
     question_embedding = response.data[0].embedding
 
+    _t0 = datetime.utcnow()
     results = supabase.rpc("match_documents", {
         "query_embedding": question_embedding,
         "match_threshold": 0.1,
@@ -304,6 +324,7 @@ def build_query_messages(question, repo_url, history, user_id=None):
         "filter_repo_url": repo_url,
         "filter_user_id": user_id
     }).execute()
+    print(f"[perf] retrieval latency: {(datetime.utcnow() - _t0).total_seconds() * 1000:.0f}ms")
 
     context = "\n\n".join([
         f"File: {match['file_path']}\n{match['content']}"
@@ -343,13 +364,13 @@ def ingest(body: IngestRequest, request: Request):
     if body.force:
         supabase.table("documents").delete().eq("repo_url", body.repo_url).is_("user_id", "null").execute()
 
-    embedded_chunks = fetch_and_embed(body.repo_url, os.getenv("GITHUB_TOKEN"))
+    embedded_chunks, file_count, total_lines = fetch_and_embed(body.repo_url, os.getenv("GITHUB_TOKEN"))
     rows = [
         {"repo_url": body.repo_url, "file_path": c["path"], "content": c["content"], "embedding": c["embedding"], "user_id": None}
         for c in embedded_chunks
     ]
-    supabase.table("documents").insert(rows).execute()
-    return {"status": "indexed", "stored": len(rows)}
+    _insert_batched(rows)
+    return {"status": "indexed", "stored": len(rows), "file_count": file_count, "total_lines": total_lines}
 
 @app.post("/ingest-personal")
 def ingest_personal(body: IngestPersonalRequest, user=Depends(get_current_user)):
@@ -362,13 +383,13 @@ def ingest_personal(body: IngestPersonalRequest, user=Depends(get_current_user))
     if body.force:
         supabase.table("documents").delete().eq("repo_url", body.repo_url).eq("user_id", user_id).execute()
 
-    embedded_chunks = fetch_and_embed(body.repo_url, body.provider_token or os.getenv("GITHUB_TOKEN"))
+    embedded_chunks, file_count, total_lines = fetch_and_embed(body.repo_url, body.provider_token or os.getenv("GITHUB_TOKEN"))
     rows = [
         {"repo_url": body.repo_url, "file_path": c["path"], "content": c["content"], "embedding": c["embedding"], "user_id": user_id}
         for c in embedded_chunks
     ]
-    supabase.table("documents").insert(rows).execute()
-    return {"status": "indexed", "stored": len(rows)}
+    _insert_batched(rows)
+    return {"status": "indexed", "stored": len(rows), "file_count": file_count, "total_lines": total_lines}
 
 @app.post("/query")
 def query(body: QueryRequest, request: Request):

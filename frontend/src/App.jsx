@@ -251,6 +251,8 @@ export default function App() {
     }
     setIndexState('indexing')
     try {
+      const _isPerfUser = session?.user?.email === 'vincentmichaelpalma@gmail.com'
+      const _indexStart = Date.now()
       const res = await fetch(`${API_URL}/ingest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -263,6 +265,9 @@ export default function App() {
         return
       }
       const data = await res.json()
+      if (_isPerfUser && data.status === 'indexed') {
+        console.log(`[perf] indexing: ${((Date.now() - _indexStart) / 1000).toFixed(1)}s | files: ${data.file_count} | lines: ${data.total_lines} | chunks: ${data.stored}`)
+      }
       if (data.status === 'indexed' || data.status === 'already_indexed') {
         const repoUrl = force ? indexedRepo : repoInput.trim()
         setIndexedRepo(repoUrl)
@@ -295,6 +300,8 @@ export default function App() {
       setIndexState('indexing')
     }
     try {
+      const _isPerfUser = session?.user?.email === 'vincentmichaelpalma@gmail.com'
+      const _indexStart = Date.now()
       const body = { repo_url: repoUrl, force }
       if (session?.provider_token) body.provider_token = session.provider_token
       const res = await fetch(`${API_URL}/ingest-personal`, {
@@ -313,6 +320,9 @@ export default function App() {
         return
       }
       const data = await res.json()
+      if (_isPerfUser && data.status === 'indexed') {
+        console.log(`[perf] indexing: ${((Date.now() - _indexStart) / 1000).toFixed(1)}s | files: ${data.file_count} | lines: ${data.total_lines} | chunks: ${data.stored}`)
+      }
       if (data.status === 'indexed' || data.status === 'already_indexed') {
         setIndexedRepo(repoUrl)
         setIndexState('success')
